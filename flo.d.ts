@@ -1,5 +1,49 @@
 type FloGlobalFetchHeaders = Record<string, string>;
 
+declare class URLSearchParams implements Iterable<[string, string]> {
+  constructor(
+    init?:
+      | string
+      | Record<string, string | number | boolean>
+      | Iterable<[string, string]>
+      | URLSearchParams,
+  );
+  append(name: string, value: string): void;
+  delete(name: string): void;
+  get(name: string): string | null;
+  getAll(name: string): string[];
+  has(name: string): boolean;
+  set(name: string, value: string): void;
+  sort(): void;
+  toString(): string;
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
+  forEach(
+    callback: (value: string, key: string, parent: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void;
+  [Symbol.iterator](): IterableIterator<[string, string]>;
+}
+
+declare class URL {
+  constructor(input: string, base?: string | URL);
+  href: string;
+  protocol: string;
+  username: string;
+  password: string;
+  host: string;
+  hostname: string;
+  port: string;
+  pathname: string;
+  search: string;
+  hash: string;
+  readonly origin: string;
+  readonly searchParams: URLSearchParams;
+  toString(): string;
+  toJSON(): string;
+}
+
 interface FloGlobalFetchInit {
   method?: string;
   headers?: Record<string, string>;
@@ -14,7 +58,7 @@ interface FloGlobalFetchResponse {
   json<T = unknown>(): Promise<T>;
 }
 
-declare function fetch(input: string, init?: FloGlobalFetchInit): Promise<FloGlobalFetchResponse>;
+declare function fetch(input: string | URL, init?: FloGlobalFetchInit): Promise<FloGlobalFetchResponse>;
 
 declare module "flo:runtime" {
   type FloJsonValue =
@@ -24,6 +68,12 @@ declare module "flo:runtime" {
     | string
     | FloJsonValue[]
     | { [key: string]: FloJsonValue };
+
+  interface FloTaskContext {
+    resume_payload?: FloJsonValue;
+    join_required_recovery?: FloJsonValue;
+    [key: string]: FloJsonValue | undefined;
+  }
 
   interface FloVaultProfileRequest {
     scope: "profile";
@@ -38,31 +88,47 @@ declare module "flo:runtime" {
 
   type FloVaultRequest = FloVaultProfileRequest | FloVaultSharedRequest;
 
-  interface FloStateGetRequest {
+  interface FloStateBindingRequestBase {
     scope: string;
-    key: string;
   }
 
-  interface FloStateListRequest {
-    scope: string;
+  interface FloStateSharedBindingRequestBase extends FloStateBindingRequestBase {
+    scope_id: string;
+  }
+
+  type FloStateGetRequest = (
+    | FloStateBindingRequestBase
+    | FloStateSharedBindingRequestBase
+  ) & {
+    key: string;
+  };
+
+  type FloStateListRequest = (
+    | FloStateBindingRequestBase
+    | FloStateSharedBindingRequestBase
+  ) & {
     key_prefix: string;
     limit?: number;
     cursor?: string;
-  }
+  };
 
-  interface FloStatePutRequest<T = FloJsonValue> {
-    scope: string;
+  type FloStatePutRequest<T = FloJsonValue> = (
+    | FloStateBindingRequestBase
+    | FloStateSharedBindingRequestBase
+  ) & {
     key: string;
     value: T;
     ttl_seconds?: number;
     if_revision?: string | null;
-  }
+  };
 
-  interface FloStateDeleteRequest {
-    scope: string;
+  type FloStateDeleteRequest = (
+    | FloStateBindingRequestBase
+    | FloStateSharedBindingRequestBase
+  ) & {
     key: string;
     if_revision?: string | null;
-  }
+  };
 
   interface FloStateEntry<T = FloJsonValue> {
     key: string;
@@ -822,6 +888,7 @@ declare module "flo:runtime" {
       delete(request: FloStateDeleteRequest): Promise<{ ok: boolean; conflict_revision?: string }>;
     };
     task: {
+      getContext<TContext = FloTaskContext>(): Promise<TContext>;
       emitEvent(request: FloTaskEmitEventRequest): Promise<void>;
       spawnChildren(request: FloSpawnChildrenRequest): Promise<FloSpawnChildrenResponse>;
       awaitBatch(request: FloAwaitBatchRequest): Promise<FloAwaitBatchResponse>;

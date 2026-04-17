@@ -37,11 +37,37 @@ const mainScriptUrl = process.argv[1]
   : null;
 const isModuleLikeFormat = (format: string | null | undefined): boolean =>
   format === "module" || format === "module-typescript";
+const nativeFetch = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+
+if (nativeFetch) {
+  globalThis.fetch = (input: string | URL | Request, init?: RequestInit) => {
+    const normalizedInput =
+      input instanceof URL
+        ? input.toString()
+        : typeof Request !== "undefined" && input instanceof Request
+          ? input
+          : String(input);
+    return nativeFetch(normalizedInput, init);
+  };
+}
 
 const unsupported = (name: string): never => {
   throw new Error(
     `${name} is unavailable in the local Node flo hook. Run this script inside agentd or avoid calling this API in local tests.`,
   );
+};
+
+const taskContext = (): unknown => {
+  const rawContext = process.env.FLO_TASK_CONTEXT_JSON;
+  if (!rawContext || rawContext.trim() === "") {
+    return {};
+  }
+  try {
+    return JSON.parse(rawContext);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`FLO_TASK_CONTEXT_JSON must contain valid JSON: ${message}`);
+  }
 };
 
 const localBrowserDisabled = (name: string): never => {
@@ -455,6 +481,7 @@ globalThis.__flo_runtime = {
     delete: async () => unsupported("flo.state.delete"),
   },
   task: {
+    getContext: async () => taskContext(),
     emitEvent: async () => unsupported("flo.task.emitEvent"),
     spawnChildren: async () => unsupported("flo.task.spawnChildren"),
     awaitBatch: async () => unsupported("flo.task.awaitBatch"),
