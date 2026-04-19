@@ -94,8 +94,10 @@ declare module "flo:runtime" {
 
   type FloVaultRequest = FloVaultProfileRequest | FloVaultSharedRequest;
 
+  type FloStateScopeKind = "profile" | "session" | "task" | "shared";
+
   interface FloStateBindingRequestBase {
-    scope: string;
+    scope_kind: FloStateScopeKind;
   }
 
   interface FloStateSharedBindingRequestBase extends FloStateBindingRequestBase {

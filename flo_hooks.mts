@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { registerHooks } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -81,6 +82,8 @@ let localBrowserServer: { close?: () => void; address?: () => unknown; unref?: (
 let localBrowserBaseUrl: string | undefined;
 let localBrowserStartupPromise: Promise<string> | undefined;
 let localBrowserShutdownInstalled = false;
+const defaultStateTtlSeconds = 3600;
+const fallbackLocalToolId = "local-node-tool";
 
 const localBrowserWorkerModulePath = (): string => {
   const override = process.env.FLO_LOCAL_BROWSER_WORKER_MODULE;
@@ -402,18 +405,172 @@ const formatUnixTimestamp = (timestamp: number, format: string, timezone?: strin
 
 let cachedVaultMocks: { profile: Record<string, unknown>; shared: Record<string, Record<string, unknown>> };
 let loadedVaultMocks = false;
+let cachedMockFile: {
+  filePath?: string;
+  raw: Record<string, unknown>;
+  vault: { profile: Record<string, unknown>; shared: Record<string, Record<string, unknown>> };
+  stateBindings: LocalStateBinding[];
+  state: LocalStateScopes;
+};
+let loadedMockFile = false;
 
-const loadVaultMocks = () => {
-  if (loadedVaultMocks) {
-    return cachedVaultMocks;
+type LocalStateEntry = {
+  value: unknown;
+  revision: string;
+  expires_at?: string;
+};
+
+type LocalStateScopeStore = Record<string, Record<string, LocalStateEntry>>;
+
+type LocalStateScopes = {
+  profile: LocalStateScopeStore;
+  session: LocalStateScopeStore;
+  task: LocalStateScopeStore;
+  shared: LocalStateScopeStore;
+};
+
+type LocalStateBinding = {
+  name: string;
+  key_prefix: string;
+  scope_kind: keyof LocalStateScopes;
+  scope_id?: string;
+};
+
+const emptyLocalStateScopes = (): LocalStateScopes => ({
+  profile: {},
+  session: {},
+  task: {},
+  shared: {},
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
+const cloneJsonValue = <T>(value: T): T =>
+  value === undefined ? value : JSON.parse(JSON.stringify(value));
+
+const validateStateEntry = (value: unknown, pathLabel: string): LocalStateEntry => {
+  if (!isRecord(value)) {
+    throw new Error(`${pathLabel} must be an object`);
+  }
+  if (typeof value.revision !== "string" || value.revision.trim() === "") {
+    throw new Error(`${pathLabel}.revision must be a non-empty string`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(value, "value")) {
+    throw new Error(`${pathLabel}.value must be present`);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "expires_at") &&
+    value.expires_at !== undefined &&
+    value.expires_at !== null &&
+    (typeof value.expires_at !== "string" || value.expires_at.trim() === "" || Number.isNaN(Date.parse(value.expires_at)))
+  ) {
+    throw new Error(`${pathLabel}.expires_at must be an ISO timestamp when provided`);
+  }
+  const entry: LocalStateEntry = {
+    value: cloneJsonValue(value.value),
+    revision: value.revision,
+  };
+  if (typeof value.expires_at === "string") {
+    entry.expires_at = value.expires_at;
+  }
+  return entry;
+};
+
+const validateStateScopes = (value: unknown): LocalStateScopes => {
+  if (value === undefined) {
+    return emptyLocalStateScopes();
+  }
+  if (!isRecord(value)) {
+    throw new Error("FLO_MOCKS_FILE `state` must be an object when provided");
   }
 
-  loadedVaultMocks = true;
+  const scopeNames = ["profile", "session", "task", "shared"] as const;
+  const state = emptyLocalStateScopes();
+  for (const scopeName of scopeNames) {
+    const scopeValue = value[scopeName];
+    if (scopeValue === undefined) {
+      continue;
+    }
+    if (!isRecord(scopeValue)) {
+      throw new Error(`FLO_MOCKS_FILE \`state.${scopeName}\` must be an object when provided`);
+    }
+    const normalizedScope: LocalStateScopeStore = {};
+    for (const [scopeId, entriesValue] of Object.entries(scopeValue)) {
+      if (!isRecord(entriesValue)) {
+        throw new Error(`FLO_MOCKS_FILE \`state.${scopeName}.${scopeId}\` must be an object`);
+      }
+      const normalizedEntries: Record<string, LocalStateEntry> = {};
+      for (const [stateKey, entryValue] of Object.entries(entriesValue)) {
+        normalizedEntries[stateKey] = validateStateEntry(
+          entryValue,
+          `FLO_MOCKS_FILE state.${scopeName}.${scopeId}.${stateKey}`,
+        );
+      }
+      normalizedScope[scopeId] = normalizedEntries;
+    }
+    state[scopeName] = normalizedScope;
+  }
+  return state;
+};
 
+const validateStateBindings = (value: unknown): LocalStateBinding[] => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("FLO_MOCKS_FILE `state_bindings` must be an array when provided");
+  }
+  return value.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new Error(`FLO_MOCKS_FILE \`state_bindings[${index}]\` must be an object`);
+    }
+    const name = requireNonEmptyString(
+      item.name,
+      `FLO_MOCKS_FILE state_bindings[${index}].name must be a non-empty string`,
+    );
+    const keyPrefix = requireNonEmptyString(
+      item.key_prefix,
+      `FLO_MOCKS_FILE state_bindings[${index}].key_prefix must be a non-empty string`,
+    );
+    const scopeKind = validateScopeKind(
+      item.scope_kind,
+      `FLO_MOCKS_FILE state_bindings[${index}].scope_kind`,
+    );
+    const scopeId =
+      item.scope_id === undefined
+        ? undefined
+        : requireNonEmptyString(
+            item.scope_id,
+            `FLO_MOCKS_FILE state_bindings[${index}].scope_id must be a non-empty string`,
+          );
+    if (scopeKind === "shared") {
+      return { name, key_prefix: keyPrefix, scope_kind: scopeKind, scope_id: scopeId };
+    }
+    if (scopeId !== undefined) {
+      throw new Error(
+        `FLO_MOCKS_FILE state_bindings[${index}].scope_id is only valid for shared scope_kind`,
+      );
+    }
+    return { name, key_prefix: keyPrefix, scope_kind: scopeKind };
+  });
+};
+
+const loadMockFile = () => {
+  if (loadedMockFile) {
+    return cachedMockFile;
+  }
+
+  loadedMockFile = true;
   const file = process.env.FLO_MOCKS_FILE;
   if (!file) {
-    cachedVaultMocks = { profile: {}, shared: {} };
-    return cachedVaultMocks;
+    cachedMockFile = {
+      raw: {},
+      vault: { profile: {}, shared: {} },
+      stateBindings: [],
+      state: emptyLocalStateScopes(),
+    };
+    return cachedMockFile;
   }
 
   const resolvedPath = path.resolve(file);
@@ -426,26 +583,434 @@ const loadVaultMocks = () => {
     );
   }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     throw new Error("FLO_MOCKS_FILE must contain a JSON object");
   }
 
-  const vault = (parsed as any).vault ?? {};
-  if (!vault || typeof vault !== "object" || Array.isArray(vault)) {
+  const vault = parsed.vault ?? {};
+  if (!isRecord(vault)) {
     throw new Error("FLO_MOCKS_FILE `vault` must be an object when provided");
   }
 
-  const profile = (vault as any).profile ?? {};
-  const shared = (vault as any).shared ?? {};
-  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+  const profile = vault.profile ?? {};
+  const shared = vault.shared ?? {};
+  if (!isRecord(profile)) {
     throw new Error("FLO_MOCKS_FILE `vault.profile` must be an object when provided");
   }
-  if (!shared || typeof shared !== "object" || Array.isArray(shared)) {
+  if (!isRecord(shared)) {
     throw new Error("FLO_MOCKS_FILE `vault.shared` must be an object when provided");
   }
 
-  cachedVaultMocks = { profile, shared };
+  const normalizedShared: Record<string, Record<string, unknown>> = {};
+  for (const [scopeId, scopeValue] of Object.entries(shared)) {
+    if (!isRecord(scopeValue)) {
+      throw new Error(`FLO_MOCKS_FILE \`vault.shared.${scopeId}\` must be an object`);
+    }
+    normalizedShared[scopeId] = scopeValue;
+  }
+
+  const state = validateStateScopes(parsed.state);
+  const stateBindings = validateStateBindings(parsed.state_bindings);
+  cachedMockFile = {
+    filePath: resolvedPath,
+    raw: parsed,
+    vault: { profile, shared: normalizedShared },
+    stateBindings,
+    state,
+  };
+  return cachedMockFile;
+};
+
+const persistMockFile = () => {
+  const mockFile = loadMockFile();
+  if (!mockFile.filePath) {
+    return;
+  }
+  mockFile.raw.vault = {
+    profile: mockFile.vault.profile,
+    shared: mockFile.vault.shared,
+  };
+  mockFile.raw.state_bindings = mockFile.stateBindings;
+  mockFile.raw.state = mockFile.state;
+  fs.writeFileSync(mockFile.filePath, `${JSON.stringify(mockFile.raw, null, 2)}\n`, "utf8");
+};
+
+const loadVaultMocks = () => {
+  if (!loadedVaultMocks) {
+    loadedVaultMocks = true;
+    const mockFile = loadMockFile();
+    cachedVaultMocks = mockFile.vault;
+  }
   return cachedVaultMocks;
+};
+
+const validateScopeKind = (scope: unknown, name: string): keyof LocalStateScopes => {
+  if (scope !== "profile" && scope !== "session" && scope !== "task" && scope !== "shared") {
+    throw new TypeError(`${name} must be \`profile\`, \`session\`, \`task\`, or \`shared\``);
+  }
+  return scope;
+};
+
+const requireNonEmptyString = (value: unknown, message: string): string => {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(message);
+  }
+  return value;
+};
+
+const parseOptionalTtlSeconds = (value: unknown, name: string): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(value) || Number(value) <= 0) {
+    throw new TypeError(`${name} requires integer \`ttl_seconds\` greater than zero`);
+  }
+  return Number(value);
+};
+
+const parseOptionalIfRevision = (value: unknown, name: string): string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${name} requires non-empty string or null \`if_revision\``);
+  }
+  return value;
+};
+
+const parseOptionalLimit = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(value) || Number(value) <= 0) {
+    throw new TypeError("flo.state.list requires integer `limit` greater than zero");
+  }
+  return Number(value);
+};
+
+const parseOptionalCursor = (value: unknown): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError("flo.state.list requires non-empty string `cursor` when provided");
+  }
+  return value;
+};
+
+const requireString = (value: unknown, message: string): string => {
+  if (typeof value !== "string") {
+    throw new TypeError(message);
+  }
+  return value;
+};
+
+const nowTimestampMs = () => Date.now();
+
+const isExpiredEntry = (entry: LocalStateEntry, nowMs = nowTimestampMs()): boolean => {
+  if (!entry.expires_at) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(entry.expires_at);
+  return Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs;
+};
+
+const defaultScopeIdForScopeKind = (scopeKind: Exclude<keyof LocalStateScopes, "shared">): string => {
+  if (scopeKind === "profile") {
+    return process.env.FLO_LOCAL_PROFILE_ID?.trim() || "local-node-profile";
+  }
+  if (scopeKind === "session") {
+    return process.env.FLO_LOCAL_SESSION_ID?.trim() || defaultLocalBrowserSessionId;
+  }
+  return process.env.FLO_LOCAL_TASK_ID?.trim() || defaultLocalBrowserTaskId;
+};
+
+const resolveLocalStateBinding = (
+  request: Record<string, unknown>,
+  key: string,
+  apiName: string,
+): LocalStateBinding => {
+  const scopeKind = validateScopeKind(request.scope_kind, `${apiName} scope_kind`);
+  const matches = loadMockFile().stateBindings.filter(
+    (binding) => binding.scope_kind === scopeKind && key.startsWith(binding.key_prefix),
+  );
+  if (matches.length === 0) {
+    throw new TypeError(
+      `state key \`${key}\` is not allowed by any local binding for scope_kind \`${scopeKind}\``,
+    );
+  }
+  if (matches.length > 1) {
+    throw new TypeError(
+      `state key \`${key}\` matches multiple local bindings for scope_kind \`${scopeKind}\``,
+    );
+  }
+  return matches[0];
+};
+
+const resolveStateScopeId = (
+  request: Record<string, unknown>,
+  binding: LocalStateBinding,
+  name: string,
+): string => {
+  if (binding.scope_kind === "shared") {
+    if (binding.scope_id !== undefined) {
+      if (Object.prototype.hasOwnProperty.call(request, "scope_id")) {
+        throw new TypeError(
+          `${name} does not accept \`scope_id\` when the local binding fixes the shared scope`,
+        );
+      }
+      return binding.scope_id;
+    }
+    return requireNonEmptyString(request.scope_id, `${name} requires non-empty \`scope_id\` for shared scope`);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(request, "scope_id") && request.scope_id !== undefined) {
+    throw new TypeError(`${name} does not accept \`scope_id\` for non-shared scope_kind`);
+  }
+
+  return defaultScopeIdForScopeKind(binding.scope_kind);
+};
+
+const ensureStateBucket = (scope: keyof LocalStateScopes, scopeId: string): Record<string, LocalStateEntry> => {
+  const state = loadMockFile().state;
+  const scopeStore = state[scope];
+  scopeStore[scopeId] ??= {};
+  return scopeStore[scopeId];
+};
+
+const maybeStateBucket = (scope: keyof LocalStateScopes, scopeId: string): Record<string, LocalStateEntry> | undefined =>
+  loadMockFile().state[scope][scopeId];
+
+const purgeExpiredEntries = (scope: keyof LocalStateScopes, scopeId: string, keyPrefix?: string): boolean => {
+  const bucket = maybeStateBucket(scope, scopeId);
+  if (!bucket) {
+    return false;
+  }
+  const nowMs = nowTimestampMs();
+  let changed = false;
+  for (const [key, entry] of Object.entries(bucket)) {
+    if (keyPrefix && !key.startsWith(keyPrefix)) {
+      continue;
+    }
+    if (isExpiredEntry(entry, nowMs)) {
+      delete bucket[key];
+      changed = true;
+    }
+  }
+  if (Object.keys(bucket).length === 0) {
+    delete loadMockFile().state[scope][scopeId];
+    changed = true;
+  }
+  return changed;
+};
+
+const normalizeStateEntry = (key: string, entry: LocalStateEntry) => {
+  const normalized: Record<string, unknown> = {
+    key,
+    value: cloneJsonValue(entry.value),
+    revision: entry.revision,
+  };
+  if (entry.expires_at) {
+    normalized.expires_at = entry.expires_at;
+  }
+  return normalized;
+};
+
+const currentLocalToolId = (): string => {
+  const explicit = process.env.FLO_LOCAL_TOOL_ID?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  if (mainScriptUrl?.startsWith("file:")) {
+    const parsed = path.parse(fileURLToPath(mainScriptUrl));
+    if (parsed.name.trim() !== "") {
+      return parsed.name;
+    }
+  }
+  return fallbackLocalToolId;
+};
+
+const toolStateReservedKey = (toolId: string, key: string) => `__flo.task.tool_state/${toolId}/${key}`;
+
+const getLocalStateEntry = (scopeKind: keyof LocalStateScopes, scopeId: string, key: string) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, key)) {
+    persistMockFile();
+  }
+  const entry = maybeStateBucket(scopeKind, scopeId)?.[key];
+  return entry ? normalizeStateEntry(key, entry) : null;
+};
+
+const listLocalStateEntries = (
+  scopeKind: keyof LocalStateScopes,
+  scopeId: string,
+  keyPrefix: string,
+  limit?: number,
+  cursor?: string,
+) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, keyPrefix)) {
+    persistMockFile();
+  }
+  const bucket = maybeStateBucket(scopeKind, scopeId) ?? {};
+  const keys = Object.keys(bucket)
+    .filter((key) => key.startsWith(keyPrefix) && (!cursor || key > cursor))
+    .sort((left, right) => left.localeCompare(right));
+  const selectedKeys = limit === undefined ? keys : keys.slice(0, limit);
+  return {
+    entries: selectedKeys.map((key) => normalizeStateEntry(key, bucket[key])),
+    next_cursor: limit !== undefined && keys.length > selectedKeys.length ? selectedKeys[selectedKeys.length - 1] : undefined,
+  };
+};
+
+const putLocalStateEntry = (
+  scopeKind: keyof LocalStateScopes,
+  scopeId: string,
+  key: string,
+  value: unknown,
+  ttlSeconds: number,
+  ifRevision: string | null | undefined,
+) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, key)) {
+    persistMockFile();
+  }
+  const bucket = ensureStateBucket(scopeKind, scopeId);
+  const existing = bucket[key];
+  if (ifRevision === null && existing) {
+    return { ok: false, conflict_revision: existing.revision };
+  }
+  if (typeof ifRevision === "string" && (!existing || existing.revision !== ifRevision)) {
+    return { ok: false, conflict_revision: existing?.revision };
+  }
+  const entry: LocalStateEntry = {
+    value: cloneJsonValue(value),
+    revision: crypto.randomUUID(),
+    expires_at: new Date(nowTimestampMs() + ttlSeconds * 1000).toISOString(),
+  };
+  bucket[key] = entry;
+  persistMockFile();
+  return {
+    ok: true,
+    entry: normalizeStateEntry(key, entry),
+  };
+};
+
+const deleteLocalStateEntry = (
+  scopeKind: keyof LocalStateScopes,
+  scopeId: string,
+  key: string,
+  ifRevision: string | null | undefined,
+) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, key)) {
+    persistMockFile();
+  }
+  const bucket = maybeStateBucket(scopeKind, scopeId);
+  const existing = bucket?.[key];
+  if (ifRevision === null) {
+    return { ok: false, conflict_revision: existing?.revision };
+  }
+  if (typeof ifRevision === "string" && (!existing || existing.revision !== ifRevision)) {
+    return { ok: false, conflict_revision: existing?.revision };
+  }
+  if (!existing) {
+    return { ok: false };
+  }
+  delete bucket[key];
+  if (bucket && Object.keys(bucket).length === 0) {
+    delete loadMockFile().state[scopeKind][scopeId];
+  }
+  persistMockFile();
+  return { ok: true };
+};
+
+const stateGet = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.get requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.state.get requires non-empty `key`");
+  const binding = resolveLocalStateBinding(request, key, "flo.state.get");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.get");
+  return getLocalStateEntry(binding.scope_kind, scopeId, key);
+};
+
+const stateList = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.list requires an object request");
+  }
+  const keyPrefix = requireString(request.key_prefix, "flo.state.list requires string `key_prefix`");
+  const limit = parseOptionalLimit(request.limit);
+  const cursor = parseOptionalCursor(request.cursor);
+  const binding = resolveLocalStateBinding(request, keyPrefix, "flo.state.list");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.list");
+  return listLocalStateEntries(binding.scope_kind, scopeId, keyPrefix, limit, cursor);
+};
+
+const statePut = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.put requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.state.put requires non-empty `key`");
+  if (!Object.prototype.hasOwnProperty.call(request, "value")) {
+    throw new TypeError("flo.state.put requires `value`");
+  }
+  const ttlSeconds = parseOptionalTtlSeconds(request.ttl_seconds, "flo.state.put") ?? defaultStateTtlSeconds;
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.state.put");
+  const binding = resolveLocalStateBinding(request, key, "flo.state.put");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.put");
+  return putLocalStateEntry(binding.scope_kind, scopeId, key, request.value, ttlSeconds, ifRevision);
+};
+
+const stateDelete = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.delete requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.state.delete requires non-empty `key`");
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.state.delete");
+  const binding = resolveLocalStateBinding(request, key, "flo.state.delete");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.delete");
+  return deleteLocalStateEntry(binding.scope_kind, scopeId, key, ifRevision);
+};
+
+const taskToolStateGet = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.task.getToolState requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.task.getToolState requires non-empty `key`");
+  const toolId = request.tool_id === undefined ? currentLocalToolId() : requireNonEmptyString(
+    request.tool_id,
+    "flo.task.getToolState requires non-empty `tool_id` when provided",
+  );
+  const entry = getLocalStateEntry(
+    "task",
+    process.env.FLO_LOCAL_TASK_ID?.trim() || defaultLocalBrowserTaskId,
+    toolStateReservedKey(toolId, key),
+  );
+  return entry ? entry.value : null;
+};
+
+const taskToolStatePut = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.task.putToolState requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.task.putToolState requires non-empty `key`");
+  if (!Object.prototype.hasOwnProperty.call(request, "value")) {
+    throw new TypeError("flo.task.putToolState requires `value`");
+  }
+  const toolId = request.tool_id === undefined ? currentLocalToolId() : requireNonEmptyString(
+    request.tool_id,
+    "flo.task.putToolState requires non-empty `tool_id` when provided",
+  );
+  const ttlSeconds = parseOptionalTtlSeconds(request.ttl_seconds, "flo.task.putToolState") ?? defaultStateTtlSeconds;
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.task.putToolState");
+  return putLocalStateEntry(
+    "task",
+    process.env.FLO_LOCAL_TASK_ID?.trim() || defaultLocalBrowserTaskId,
+    toolStateReservedKey(toolId, key),
+    request.value,
+    ttlSeconds,
+    ifRevision,
+  );
 };
 
 const vaultGet = async (request: any) => {
@@ -495,17 +1060,17 @@ globalThis.__flo_runtime = {
     get: vaultGet,
   },
   state: {
-    get: async () => unsupported("flo.state.get"),
-    list: async () => unsupported("flo.state.list"),
-    put: async () => unsupported("flo.state.put"),
-    delete: async () => unsupported("flo.state.delete"),
+    get: stateGet,
+    list: stateList,
+    put: statePut,
+    delete: stateDelete,
   },
   task: {
     limits: {
       maxSpawnChildren: floTaskMaxSpawnChildren,
     },
-    getToolState: async () => unsupported("flo.task.getToolState"),
-    putToolState: async () => unsupported("flo.task.putToolState"),
+    getToolState: taskToolStateGet,
+    putToolState: taskToolStatePut,
     getContext: async () => taskContext(),
     emitEvent: async (request: unknown) => {
       console.log(request);

@@ -1,0 +1,11 @@
+[book]
+title = "Flo Runtime Book"
+authors = ["FloAgent contributors"]
+description = "Public authoring guide for Flo skill developers."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "light"
+git-repository-url = "https://github.com/FlordaWeave/floagent"
+edit-url-template = "https://github.com/FlordaWeave/floagent/edit/main/runtime-book/src/{path}"
