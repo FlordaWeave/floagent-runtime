@@ -296,6 +296,12 @@ declare module "flo:runtime" {
     timeout_ms?: number;
   }
 
+  interface FloBrowserReloadCommand {
+    type: "reload";
+    wait_until?: string;
+    timeout_ms?: number;
+  }
+
   type FloBrowserRequestResourceType = "xhr" | "fetch";
 
   interface FloBrowserRequestCaptureMatcherBase {
@@ -324,16 +330,7 @@ declare module "flo:runtime" {
     headers: Record<string, string>;
   }
 
-  interface FloBrowserCapturedResponse {
-    url: string;
-    status: number;
-    headers: Record<string, string>;
-  }
-
-  interface FloBrowserRequestCaptureResult {
-    request: FloBrowserCapturedRequest;
-    response: FloBrowserCapturedResponse;
-  }
+  type FloBrowserRequestCaptureResult = FloBrowserCapturedRequest;
 
   interface FloBrowserFillCommand {
     type: "fill";
@@ -386,6 +383,7 @@ declare module "flo:runtime" {
 
   type FloBrowserCommand =
     | FloBrowserGotoCommand
+    | FloBrowserReloadCommand
     | FloBrowserFillCommand
     | FloBrowserClickCommand
     | FloBrowserPressCommand

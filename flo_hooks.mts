@@ -193,6 +193,22 @@ const localBrowserIdentity = () => ({
   session_id: defaultLocalBrowserSessionId,
 });
 
+const localBrowserWorkerMessage = (body: unknown, status: number): string => {
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const error = (body as { error?: unknown }).error;
+    if (error && typeof error === "object" && !Array.isArray(error)) {
+      const code = (error as { code?: unknown }).code;
+      const message = (error as { message?: unknown }).message;
+      const retryable = (error as { retryable?: unknown }).retryable;
+      const renderedMessage = typeof message === "string" && message.trim() !== "" ? message : `HTTP ${status}`;
+      const renderedCode = typeof code === "string" && code.trim() !== "" ? `${code}: ` : "";
+      const renderedRetryable = retryable === true ? " (retryable)" : "";
+      return `${renderedCode}${renderedMessage}${renderedRetryable}`;
+    }
+  }
+  return `HTTP ${status}`;
+};
+
 const localBrowserRequest = async (pathname: string, payload: Record<string, unknown>) => {
   const baseUrl = await startLocalBrowserServer();
   const response = await fetch(`${baseUrl}${pathname}`, {
@@ -211,11 +227,14 @@ const localBrowserRequest = async (pathname: string, payload: Record<string, unk
     throw new Error(`Local browser worker returned invalid JSON: ${message}`);
   }
 
-  if (!response.ok) {
-    const workerMessage =
-      body && typeof body === "object" && body.error && typeof body.error.message === "string"
-        ? body.error.message
-        : `HTTP ${response.status}`;
+  if (
+    !response.ok ||
+    (body &&
+      typeof body === "object" &&
+      !Array.isArray(body) &&
+      (body as { status?: unknown }).status === "error")
+  ) {
+    const workerMessage = localBrowserWorkerMessage(body, response.status);
     throw new Error(`Local browser worker request failed: ${workerMessage}`);
   }
 
@@ -488,7 +507,9 @@ globalThis.__flo_runtime = {
     getToolState: async () => unsupported("flo.task.getToolState"),
     putToolState: async () => unsupported("flo.task.putToolState"),
     getContext: async () => taskContext(),
-    emitEvent: async () => unsupported("flo.task.emitEvent"),
+    emitEvent: async (request: unknown) => {
+      console.log(request);
+    },
     spawnChildren: async () => unsupported("flo.task.spawnChildren"),
     waitForBatch: async () => unsupported("flo.task.waitForBatch"),
     getBatchResults: async () => unsupported("flo.task.getBatchResults"),

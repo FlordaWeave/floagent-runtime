@@ -70,12 +70,11 @@ class FakeLocator {
 }
 
 class FakeRequest {
-  constructor({ url, method = "GET", resourceType = "fetch", headers = {}, response = null }) {
+  constructor({ url, method = "GET", resourceType = "fetch", headers = {} }) {
     this.urlValue = url;
     this.methodValue = method;
     this.resourceTypeValue = resourceType;
     this.headersValue = headers;
-    this.responseValue = response;
   }
 
   url() {
@@ -92,35 +91,6 @@ class FakeRequest {
 
   headers() {
     return this.headersValue;
-  }
-
-  async response() {
-    return this.responseValue ? new FakeResponse(this.responseValue) : null;
-  }
-}
-
-class FakeResponse {
-  constructor({ url, status = 200, headers = {}, bodyText = "" }) {
-    this.urlValue = url;
-    this.statusValue = status;
-    this.headersValue = headers;
-    this.bodyTextValue = bodyText;
-  }
-
-  url() {
-    return this.urlValue;
-  }
-
-  status() {
-    return this.statusValue;
-  }
-
-  headers() {
-    return this.headersValue;
-  }
-
-  async text() {
-    return this.bodyTextValue;
   }
 }
 
@@ -139,6 +109,7 @@ class FakePage extends EventEmitter {
     this.visibleSelectors = new Set();
     this.clicks = [];
     this.keys = [];
+    this.focusCount = 0;
   }
 
   async beforeOperation(kind) {
@@ -170,6 +141,11 @@ class FakePage extends EventEmitter {
     this.urlValue = url;
   }
 
+  async reload() {
+    await this.beforeOperation("reload");
+    this.urlValue = `${this.urlValue}#reloaded`;
+  }
+
   emitRequest(request) {
     this.emit("request", new FakeRequest(request));
   }
@@ -196,6 +172,11 @@ class FakePage extends EventEmitter {
   async screenshot() {
     await this.beforeOperation("screenshot");
     return Buffer.from(`screenshot:${this.urlValue}`);
+  }
+
+  async bringToFront() {
+    await this.beforeOperation("bring_to_front");
+    this.focusCount += 1;
   }
 
   async evaluate(pageFunction, arg) {
@@ -443,6 +424,31 @@ test("storage-state import resets only the targeted session", async () => {
   }
 });
 
+test("session focus brings the requested page to front", async () => {
+  const worker = await startWorker();
+  try {
+    await postJson(worker.baseUrl, "/v1/session/start", {
+      task_id: "task-a",
+      session_id: "session-a",
+    });
+
+    const session = worker.state.sessions.get("task-a:session-a");
+    session.page.urlValue = "https://example.com/app";
+
+    const response = await postJson(worker.baseUrl, "/v1/session/focus", {
+      task_id: "task-a",
+      session_id: "session-a",
+    });
+
+    assert.equal(response.response.status, 200);
+    assert.equal(response.body.focused, true);
+    assert.equal(response.body.current_url, "https://example.com/app");
+    assert.equal(session.page.focusCount, 1);
+  } finally {
+    await worker.close();
+  }
+});
+
 test("handoff tokens stay scoped to their session", async () => {
   const worker = await startWorker();
   try {
@@ -473,6 +479,33 @@ test("handoff tokens stay scoped to their session", async () => {
 
     assert.equal(firstMeta.body.current_url, "https://example.com/a");
     assert.equal(secondMeta.body.current_url, "https://example.com/b");
+  } finally {
+    await worker.close();
+  }
+});
+
+test("browser command reload refreshes the current page", async () => {
+  const worker = await startWorker();
+  try {
+    await postJson(worker.baseUrl, "/v1/commands", {
+      task_id: "task-a",
+      session_id: "session-a",
+      command: { type: "goto", url: "https://example.com/a" },
+    });
+
+    const response = await postJson(worker.baseUrl, "/v1/commands", {
+      task_id: "task-a",
+      session_id: "session-a",
+      command: {
+        type: "reload",
+        wait_until: "networkidle",
+        timeout_ms: 10_000,
+      },
+    });
+
+    assert.equal(response.response.status, 200);
+    assert.equal(response.body.status, "ok");
+    assert.equal(response.body.result.current_url, "https://example.com/a#reloaded");
   } finally {
     await worker.close();
   }
@@ -588,7 +621,7 @@ test("evaluate accepts args and returns null for undefined", async () => {
   }
 });
 
-test("request capture collects multiple responses in observed order", async () => {
+test("request capture collects multiple requests in observed order", async () => {
   const worker = await startWorker({
     browserHook(browser) {
       browser.hooks.beforeOperation = async ({ kind, page }) => {
@@ -600,11 +633,6 @@ test("request capture collects multiple responses in observed order", async () =
             headers: {
               accept: "application/json",
             },
-            response: {
-              url: "https://api.example.com/profile",
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
           });
           page.emitRequest({
             url: "https://api.example.com/data",
@@ -613,11 +641,6 @@ test("request capture collects multiple responses in observed order", async () =
             headers: {
               authorization: "Bearer secret",
               "x-trace-id": "trace-1",
-            },
-            response: {
-              url: "https://api.example.com/data",
-              status: 201,
-              headers: { "content-type": "application/json" },
             },
           });
         }
@@ -674,38 +697,20 @@ test("request capture collects multiple responses in observed order", async () =
     assert.equal(response.body.result.current_url, "https://example.com/app");
     assert.deepEqual(response.body.result.value.captures, [
       {
-        request: {
-          url: "https://api.example.com/profile",
-          method: "GET",
-          resource_type: "fetch",
-          headers: {
-            accept: "application/json",
-          },
-        },
-        response: {
-          url: "https://api.example.com/profile",
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-          },
+        url: "https://api.example.com/profile",
+        method: "GET",
+        resource_type: "fetch",
+        headers: {
+          accept: "application/json",
         },
       },
       {
-        request: {
-          url: "https://api.example.com/data",
-          method: "POST",
-          resource_type: "xhr",
-          headers: {
-            authorization: "Bearer secret",
-            "x-trace-id": "trace-1",
-          },
-        },
-        response: {
-          url: "https://api.example.com/data",
-          status: 201,
-          headers: {
-            "content-type": "application/json",
-          },
+        url: "https://api.example.com/data",
+        method: "POST",
+        resource_type: "xhr",
+        headers: {
+          authorization: "Bearer secret",
+          "x-trace-id": "trace-1",
         },
       },
     ]);
@@ -726,11 +731,6 @@ test("request capture matches exact and regex url filters", async () => {
             headers: {
               accept: "application/json",
             },
-            response: {
-              url: "https://api.example.com/bootstrap",
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
           });
           page.emitRequest({
             url: "https://api.example.com/log",
@@ -738,11 +738,6 @@ test("request capture matches exact and regex url filters", async () => {
             resourceType: "xhr",
             headers: {
               "content-type": "application/json",
-            },
-            response: {
-              url: "https://api.example.com/log",
-              status: 202,
-              headers: { "x-accepted": "yes" },
             },
           });
         }
@@ -794,10 +789,8 @@ test("request capture matches exact and regex url filters", async () => {
 
     assert.equal(response.response.status, 200);
     assert.equal(response.body.status, "ok");
-    assert.equal(response.body.result.value.captures[0].request.resource_type, "fetch");
-    assert.equal(response.body.result.value.captures[1].request.resource_type, "xhr");
-    assert.equal(response.body.result.value.captures[0].response.status, 200);
-    assert.equal(response.body.result.value.captures[1].response.status, 202);
+    assert.equal(response.body.result.value.captures[0].resource_type, "fetch");
+    assert.equal(response.body.result.value.captures[1].resource_type, "xhr");
   } finally {
     await worker.close();
   }
@@ -813,33 +806,18 @@ test("request capture ignores non-matching method and url", async () => {
             method: "POST",
             resourceType: "xhr",
             headers: { "x-ignored": "1" },
-            response: {
-              url: "https://api.example.com/other",
-              status: 200,
-              headers: {},
-            },
           });
           page.emitRequest({
             url: "https://api.example.com/data",
             method: "GET",
             resourceType: "xhr",
             headers: { "x-ignored": "2" },
-            response: {
-              url: "https://api.example.com/data",
-              status: 200,
-              headers: {},
-            },
           });
           page.emitRequest({
             url: "https://api.example.com/data",
             method: "POST",
             resourceType: "xhr",
             headers: { "x-match": "ok" },
-            response: {
-              url: "https://api.example.com/data",
-              status: 200,
-              headers: { "content-type": "text/plain" },
-            },
           });
         }
       };
@@ -885,8 +863,7 @@ test("request capture ignores non-matching method and url", async () => {
     });
 
     assert.equal(response.body.status, "ok");
-    assert.deepEqual(response.body.result.value.captures[0].request.headers, { "x-match": "ok" });
-    assert.equal(response.body.result.value.captures[0].response.status, 200);
+    assert.deepEqual(response.body.result.value.captures[0].headers, { "x-match": "ok" });
   } finally {
     await worker.close();
   }
@@ -902,11 +879,6 @@ test("request capture supports overlapping handles", async () => {
             method: "POST",
             resourceType: "xhr",
             headers: { shared: "true" },
-            response: {
-              url: "https://api.example.com/data",
-              status: 200,
-              headers: {},
-            },
           });
         }
       };
@@ -1034,11 +1006,6 @@ test("request capture handles are one-shot after collection", async () => {
             method: "GET",
             resourceType: "fetch",
             headers: {},
-            response: {
-              url: "https://api.example.com/data",
-              status: 200,
-              headers: {},
-            },
           });
         }
       };

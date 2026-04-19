@@ -1,4 +1,6 @@
 import http from "node:http";
+import net from "node:net";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { URL } from "node:url";
@@ -20,6 +22,55 @@ const defaultMaxContextsPerBrowser = parsePositiveInt(
   process.env.MAX_CONTEXTS_PER_BROWSER,
   8,
 );
+const vncEnabled = process.env.ENABLE_VNC === "1";
+const displayId = process.env.DISPLAY || ":99";
+const xvfbResolution = process.env.XVFB_RESOLUTION || "1440x900x24";
+const novncPort = parsePositiveInt(process.env.NOVNC_PORT, 6080);
+const vncPort = parsePositiveInt(process.env.VNC_PORT, 5900);
+const novncWebRoot = process.env.NOVNC_WEB_ROOT || "/usr/share/novnc";
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPort(host, port, timeoutMs = 10_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = net.connect({ host, port });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+      return;
+    } catch {
+      await sleep(100);
+    }
+  }
+  throw new Error(`Timed out waiting for ${host}:${port}`);
+}
+
+function spawnManagedProcess(command, args, options = {}) {
+  const child = spawn(command, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  });
+  child.stdout?.on("data", (chunk) => {
+    process.stdout.write(`[${command}] ${chunk}`);
+  });
+  child.stderr?.on("data", (chunk) => {
+    process.stderr.write(`[${command}] ${chunk}`);
+  });
+  child.on("exit", (code, signal) => {
+    if (code !== 0 && signal == null) {
+      console.error(`${command} exited with code ${code}`);
+    }
+  });
+  return child;
+}
 
 class WorkerError extends Error {
   constructor(code, message, options = {}) {
@@ -182,24 +233,6 @@ function extractRequestDetails(request) {
   };
 }
 
-async function captureRequestWithResponse(request) {
-  const response = await request.response();
-  if (!response) {
-    throw new WorkerError(
-      "response_not_available",
-      `No response was available for request ${request.url()}`,
-    );
-  }
-  return {
-    request: extractRequestDetails(request),
-    response: {
-      url: response.url(),
-      status: response.status(),
-      headers: response.headers(),
-    },
-  };
-}
-
 function requestMatchesMatcher(request, matcher) {
   if (matcher.method && request.method().toUpperCase() !== matcher.method) {
     return false;
@@ -253,6 +286,62 @@ export function createPlaywrightWorker(options = {}) {
     handoffs: new Map(),
     sessionLocks: new Map(),
   };
+  let vncRuntime = null;
+  let vncRuntimePromise = null;
+
+  async function ensureVncRuntime() {
+    if (!vncEnabled) {
+      return null;
+    }
+    if (vncRuntime) {
+      return vncRuntime;
+    }
+    if (!vncRuntimePromise) {
+      vncRuntimePromise = (async () => {
+        const env = { ...process.env, DISPLAY: displayId };
+        const xvfb = spawnManagedProcess(
+          "Xvfb",
+          [displayId, "-screen", "0", xvfbResolution, "-ac"],
+          { env },
+        );
+        await sleep(250);
+        const fluxbox = spawnManagedProcess("fluxbox", [], { env });
+        const x11vnc = spawnManagedProcess(
+          "x11vnc",
+          ["-display", displayId, "-forever", "-shared", "-nopw", "-listen", "127.0.0.1", "-rfbport", String(vncPort)],
+          { env },
+        );
+        await waitForPort("127.0.0.1", vncPort);
+        const websockify = spawnManagedProcess(
+          "websockify",
+          ["--web", novncWebRoot, String(novncPort), `127.0.0.1:${vncPort}`],
+          { env },
+        );
+        await waitForPort("127.0.0.1", novncPort);
+        vncRuntime = { xvfb, fluxbox, x11vnc, websockify };
+        return vncRuntime;
+      })().catch((error) => {
+        vncRuntimePromise = null;
+        throw error;
+      });
+    }
+    return vncRuntimePromise;
+  }
+
+  function stopVncRuntime() {
+    if (!vncRuntime) {
+      return;
+    }
+    for (const processRef of Object.values(vncRuntime)) {
+      try {
+        processRef.kill("SIGTERM");
+      } catch {
+        // Best effort shutdown only.
+      }
+    }
+    vncRuntime = null;
+    vncRuntimePromise = null;
+  }
 
   function clearSessionHandoff(session) {
     if (!session?.handoff) {
@@ -347,9 +436,11 @@ export function createPlaywrightWorker(options = {}) {
       if (!chromiumImpl) {
         ({ chromium: chromiumImpl } = await import("playwright"));
       }
+      await ensureVncRuntime();
       state.browserPromise = chromiumImpl
         .launch({
-          headless: true,
+          headless: !vncEnabled,
+          env: vncEnabled ? { ...process.env, DISPLAY: displayId } : process.env,
           args: ["--remote-debugging-address=0.0.0.0", "--remote-debugging-port=9222"],
         })
         .then((browser) => {
@@ -412,8 +503,8 @@ export function createPlaywrightWorker(options = {}) {
 
   function withSessionLock(key, operation) {
     const previous = state.sessionLocks.get(key) || Promise.resolve();
-    const current = previous.catch(() => {}).then(operation);
-    const queued = current.catch(() => {}).finally(() => {
+    const current = previous.catch(() => { }).then(operation);
+    const queued = current.catch(() => { }).finally(() => {
       if (state.sessionLocks.get(key) === queued) {
         state.sessionLocks.delete(key);
       }
@@ -430,6 +521,7 @@ export function createPlaywrightWorker(options = {}) {
     if (!session?.requestCaptures || session.requestCaptures.size === 0) {
       return;
     }
+
     const matchingCaptureIds = [];
     for (const capture of session.requestCaptures.values()) {
       if (capture.matchers.some((matcher) => requestMatchesMatcher(request, matcher))) {
@@ -439,12 +531,7 @@ export function createPlaywrightWorker(options = {}) {
     if (matchingCaptureIds.length === 0) {
       return;
     }
-    let capturedRequest;
-    try {
-      capturedRequest = await captureRequestWithResponse(request);
-    } catch {
-      return;
-    }
+    const capturedRequest = extractRequestDetails(request);
     for (const captureId of matchingCaptureIds) {
       const capture = session.requestCaptures.get(captureId);
       if (!capture) {
@@ -521,6 +608,15 @@ export function createPlaywrightWorker(options = {}) {
 
   async function currentUrl(session) {
     return session?.page ? session.page.url() : null;
+  }
+
+  async function focusSession(identity) {
+    const session = await ensureSession(identity);
+    await session.page.bringToFront();
+    return {
+      current_url: await currentUrl(session),
+      focused: true,
+    };
   }
 
   async function startRequestCapture(session, command) {
@@ -718,102 +814,108 @@ export function createPlaywrightWorker(options = {}) {
     return null;
   }
 
-async function executeCommand(session, command) {
-  switch (command.type) {
-    case "goto":
-      await session.page.goto(command.url, {
-        waitUntil: command.wait_until || "domcontentloaded",
-        timeout: command.timeout_ms || 30_000,
-      });
-      return { current_url: await currentUrl(session) };
-    case "start_request_capture":
-      return startRequestCapture(session, command);
-    case "collect_captured_requests":
-      return collectCapturedRequests(session, command);
-    case "stop_request_capture":
-      return stopRequestCapture(session, command);
-    case "fill":
-      await session.page.locator(command.selector).fill(command.value);
-      return { current_url: await currentUrl(session) };
-    case "click":
-      await session.page.locator(command.selector).click();
-      return { current_url: await currentUrl(session) };
-    case "press":
-      await session.page.locator(command.selector).press(command.key);
-      return { current_url: await currentUrl(session) };
-    case "select":
-      await session.page.locator(command.selector).selectOption(command.values);
-      return { current_url: await currentUrl(session) };
-    case "wait_for":
-      if (command.selector) {
-        await session.page.locator(command.selector).waitFor({ timeout: command.timeout_ms });
-      } else if (command.url) {
-        await session.page.waitForURL(command.url, { timeout: command.timeout_ms });
-      } else if (command.text) {
-        await session.page.getByText(command.text).waitFor({ timeout: command.timeout_ms });
-      }
-      return { current_url: await currentUrl(session) };
-    case "extract": {
-      const locator = session.page.locator(command.selector).first();
-      if (command.attribute) {
+  async function executeCommand(session, command) {
+    switch (command.type) {
+      case "goto":
+        await session.page.goto(command.url, {
+          waitUntil: command.wait_until || "domcontentloaded",
+          timeout: command.timeout_ms || 30_000,
+        });
+        return { current_url: await currentUrl(session) };
+      case "reload":
+        await session.page.reload({
+          waitUntil: command.wait_until || "domcontentloaded",
+          timeout: command.timeout_ms || 30_000,
+        });
+        return { current_url: await currentUrl(session) };
+      case "start_request_capture":
+        return startRequestCapture(session, command);
+      case "collect_captured_requests":
+        return collectCapturedRequests(session, command);
+      case "stop_request_capture":
+        return stopRequestCapture(session, command);
+      case "fill":
+        await session.page.locator(command.selector).fill(command.value);
+        return { current_url: await currentUrl(session) };
+      case "click":
+        await session.page.locator(command.selector).click();
+        return { current_url: await currentUrl(session) };
+      case "press":
+        await session.page.locator(command.selector).press(command.key);
+        return { current_url: await currentUrl(session) };
+      case "select":
+        await session.page.locator(command.selector).selectOption(command.values);
+        return { current_url: await currentUrl(session) };
+      case "wait_for":
+        if (command.selector) {
+          await session.page.locator(command.selector).waitFor({ timeout: command.timeout_ms });
+        } else if (command.url) {
+          await session.page.waitForURL(command.url, { timeout: command.timeout_ms });
+        } else if (command.text) {
+          await session.page.getByText(command.text).waitFor({ timeout: command.timeout_ms });
+        }
+        return { current_url: await currentUrl(session) };
+      case "extract": {
+        const locator = session.page.locator(command.selector).first();
+        if (command.attribute) {
+          return {
+            current_url: await currentUrl(session),
+            attribute: await locator.getAttribute(command.attribute),
+          };
+        }
         return {
           current_url: await currentUrl(session),
-          attribute: await locator.getAttribute(command.attribute),
+          text: command.text_content
+            ? await locator.textContent()
+            : await locator.innerText(),
         };
       }
-      return {
-        current_url: await currentUrl(session),
-        text: command.text_content
-          ? await locator.textContent()
-          : await locator.innerText(),
-      };
-    }
-    case "evaluate": {
-      const value = await session.page.evaluate(
-        async ({ expression, args }) => {
-          const evaluator = new Function(
-            "args",
-            `return (async () => (${expression}))();`,
-          );
-          const result = await evaluator(args ?? null);
-          if (result === undefined) {
-            return null;
-          }
-          try {
-            return JSON.parse(JSON.stringify(result));
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : String(error);
-            throw new Error(
-              `evaluate result is not JSON-serializable: ${message}`,
+      case "evaluate": {
+        const value = await session.page.evaluate(
+          async ({ expression, args }) => {
+            const evaluator = new Function(
+              "args",
+              `return (async () => (${expression}))();`,
             );
-          }
-        },
-        {
-          expression: command.expression,
-          args: command.args ?? null,
-        },
-      );
-      return {
-        current_url: await currentUrl(session),
-        value,
-      };
+            const result = await evaluator(args ?? null);
+            if (result === undefined) {
+              return null;
+            }
+            try {
+              return JSON.parse(JSON.stringify(result));
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `evaluate result is not JSON-serializable: ${message}`,
+              );
+            }
+          },
+          {
+            expression: command.expression,
+            args: command.args ?? null,
+          },
+        );
+        return {
+          current_url: await currentUrl(session),
+          value,
+        };
+      }
+      case "screenshot":
+        return {
+          current_url: await currentUrl(session),
+          screenshot_base64: (
+            await session.page.screenshot({ fullPage: Boolean(command.full_page) })
+          ).toString("base64"),
+        };
+      default:
+        throw new WorkerError(
+          "invalid_request",
+          `Unsupported command type: ${command.type}`,
+          { statusCode: 400 },
+        );
     }
-    case "screenshot":
-      return {
-        current_url: await currentUrl(session),
-        screenshot_base64: (
-          await session.page.screenshot({ fullPage: Boolean(command.full_page) })
-        ).toString("base64"),
-      };
-    default:
-      throw new WorkerError(
-        "invalid_request",
-        `Unsupported command type: ${command.type}`,
-        { statusCode: 400 },
-      );
   }
-}
 
   function handoffHtml(token) {
     return `<!doctype html>
@@ -914,6 +1016,14 @@ async function executeCommand(session, command) {
         const identity = sessionIdentityFromBody(body);
         await withSessionLock(identity.key, () => stopSession(identity));
         return sendJson(res, 200, { current_url: null });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/session/focus") {
+        const body = await readJson(req);
+        const identity = sessionIdentityFromBody(body);
+        const response = await withSessionLock(identity.key, () =>
+          withBrowserHandling(() => focusSession(identity)),
+        );
+        return sendJson(res, 200, response);
       }
       if (req.method === "POST" && url.pathname === "/v1/storage-state/export") {
         const body = await readJson(req);
@@ -1054,6 +1164,10 @@ async function executeCommand(session, command) {
     }
   });
 
+  server.on("close", () => {
+    stopVncRuntime();
+  });
+
   return { server, state };
 }
 
@@ -1062,6 +1176,11 @@ const isMainModule =
 
 if (isMainModule) {
   const { server } = createPlaywrightWorker();
+  const shutdown = () => {
+    server.close();
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
   server.listen(defaultPort, () => {
     console.log(`playwright worker listening on ${defaultPort}`);
   });
