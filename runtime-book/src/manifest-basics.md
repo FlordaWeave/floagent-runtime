@@ -67,6 +67,7 @@ Each skill must define exactly one instruction source:
 Optional fields include:
 
 - `version`
+- `execution_model_tier`
 - `tools`
 - `script_tools`
 - `tool_definitions`
@@ -79,6 +80,7 @@ Example:
 skill_id: browser_examples
 name: Browser Examples
 description: Browser-based tools for authenticated workflows.
+execution_model_tier: large
 tools:
   - read_text_file
 script_tools:
@@ -105,6 +107,11 @@ Field behavior:
   - declares referenced external or built-in tool ids for the selected skill
   - these tools are exposed to the LLM tool list
   - these tools are also callable from `flo.callTool(...)`
+- `execution_model_tier`
+  - optionally requests the execution-stage model tier for that skill
+  - allowed values: `nano`, `small`, `medium`, `large`, `frontier`
+  - applies only to the main execution stage, not task selection, gate, or task summary
+  - when multiple selected skills request different tiers, Flo uses the highest requested tier
 - `script_tools`
   - declares referenced external or built-in tool ids for the selected skill
   - these tools are callable from `flo.callTool(...)`
