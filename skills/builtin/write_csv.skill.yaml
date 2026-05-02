@@ -6,16 +6,20 @@ instruction: |
   Use this skill when you need to create a CSV file or update cell values in an existing CSV file.
 
   Use these tools:
-  - `csv_create` to create a new `.csv` file with initial cell values.
-  - `csv_edit_cells` to update one or more cells in an existing `.csv` file.
+  - `csv_create` to create a new `.csv` file from a dense 2D array of row-major values.
+  - `csv_edit_cells` to patch one or more cells in an existing `.csv` file.
 
   Example payloads:
-  - `csv_create`: `{"path":"task://data/sales.csv","assignments":[{"cell":"A1","value":"Quarter"},{"cell":"B1","value":"Revenue"},{"cell":"A2","value":"Q1"},{"cell":"B2","value":12500}]}`
+  - `csv_create`: `{"path":"task://data/sales.csv","values":[["Quarter","Revenue"],["Q1",12500],["Q2",13800]]}`
   - `csv_edit_cells`: `{"path":"task://data/sales.csv","assignments":[{"cell":"B2","value":12800},{"cell":"C2","value":"updated"}]}`
 
   Important constraints:
   - `path` must be a VFS path and must end in `.csv`.
-  - `assignments` is required, and each assignment needs `cell` with optional `value`.
+  - `csv_create` requires `values`, a 2D array written from `A1` in row-major order.
+  - `csv_edit_cells` requires `assignments`, and each assignment needs `cell` with optional `value`.
+  - Use `csv_create` for initial file population, especially for tabular data.
+  - Use `csv_edit_cells` only for patching an existing file or for a small number of targeted edits.
+  - Do not create a file and then send a large `csv_edit_cells` payload for the initial dataset.
   - Use A1 notation for `assignments[].cell`.
   - CSV files do not support sheets or structure edits.
   - `csv_create` fails if the file already exists.

@@ -34,6 +34,11 @@ Possible statuses are:
 - `validation_error`
 - `suspended`
 
+When `error` is present, it includes:
+
+- `retryable`: whether the failed task/run is eligible for retry
+- `continuable`: whether the model may continue the current turn after that failed call
+
 ## Typed Built-In Calls
 
 For built-in tools declared in `flo.d.ts`, TypeScript can infer the input and output shape:

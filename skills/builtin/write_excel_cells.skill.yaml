@@ -6,8 +6,8 @@ instruction: |
   Use this skill when you need non-structural edits to an Excel workbook in the virtual workspace.
 
   Use these tools:
-  - `excel_create` to create a new workbook with initial cell values.
-  - `excel_edit_cells` to update one or more cells in an existing workbook.
+  - `excel_create` to create a new workbook from a dense 2D array of row-major values.
+  - `excel_edit_cells` to patch one or more cells in an existing workbook.
   - `excel_copy_cell_style` to copy one cell style directly without changing target values.
   - `excel_clear_cell_style` to clear formatting from one or more cells without changing their values.
   - `excel_copy_row` to copy row style, per-cell styles, merged cells, and row height to target rows without changing values.
@@ -15,7 +15,7 @@ instruction: |
   - `excel_auto_fit_row` to increase a row height so wrapped content is visible.
 
   Example payloads:
-  - `excel_create`: `{"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"A1","value":"Month"},{"cell":"B1","value":"Spend"},{"cell":"A2","value":"January"},{"cell":"B2","value":4200}]}`
+  - `excel_create`: `{"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","values":[["Month","Spend"],["January",4200],["February",3900]]}`
   - `excel_edit_cells`: `{"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"B2","value":4500},{"cell":"C2","value":"forecast"}]}`
   - `excel_copy_cell_style`: `{"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","source_cell":"B2","target_cells":["B3","B4","D2"]}`
   - `excel_clear_cell_style`: `{"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","cells":["B3","B4","D2"]}`
@@ -25,11 +25,15 @@ instruction: |
 
   Important constraints:
   - `path` must be a VFS path and must end in `.xlsx`.
-  - `excel_create` and `excel_edit_cells` require `assignments`, where each assignment has `cell` and optional `value`.
+  - `excel_create` requires `values`, a 2D array written from `A1` in row-major order on a single sheet.
+  - `excel_edit_cells` requires `assignments`, where each assignment has `cell` and optional `value`.
   - `excel_copy_cell_style` requires `source_cell` with `target_cells`.
   - `excel_clear_cell_style` requires `cells`.
   - `excel_copy_row` requires `source_row` with `target_rows`, where each row ref is an object with `row` and optional `sheet`.
   - `excel_copy_column` requires `source_column` with `target_columns`, where each column ref is an object with `column` and optional `sheet`.
+  - Use `excel_create` for initial workbook population, especially for tabular data.
+  - Use `excel_edit_cells` only for patching an existing workbook or for a small number of targeted edits.
+  - Do not create a workbook and then send a large `excel_edit_cells` payload for the initial dataset.
   - Use A1 notation for cell refs, 1-based row numbers for row refs, and Excel letters for column refs.
   - Use A1 notation for `assignments[].cell`.
   - `excel_create` fails if the workbook already exists.

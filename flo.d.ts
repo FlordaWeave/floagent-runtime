@@ -148,6 +148,7 @@ declare module "flo:runtime" {
     code: string;
     message: string;
     retryable: boolean;
+    continuable: boolean;
   }
 
   interface FloToolCallResult<TOutput = unknown> {
@@ -407,7 +408,7 @@ declare module "flo:runtime" {
     | "csv_inspect"
     /** Read a CSV A1 range. Example input: {"path":"task://data/sales.csv","range":"A1:C5"}. */
     | "csv_read"
-    /** Create a CSV file with initial cell assignments. Example input: {"path":"task://data/sales.csv","assignments":[{"cell":"A1","value":"Quarter"},{"cell":"B1","value":"Revenue"},{"cell":"A2","value":"Q1"},{"cell":"B2","value":12500}]}. */
+    /** Create a CSV file from dense row-major values. Example input: {"path":"task://data/sales.csv","values":[["Quarter","Revenue"],["Q1",12500]]}. */
     | "csv_create"
     /** Edit cells in an existing CSV file. Example input: {"path":"task://data/sales.csv","assignments":[{"cell":"B2","value":12800},{"cell":"C2","value":"updated"}]}. */
     | "csv_edit_cells"
@@ -415,7 +416,7 @@ declare module "flo:runtime" {
     | "excel_inspect"
     /** Read an XLSX A1 range. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","range":"A1:D8"}. */
     | "excel_read"
-    /** Create an XLSX workbook with initial cell assignments. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"A1","value":"Month"},{"cell":"B1","value":"Spend"},{"cell":"A2","value":"January"},{"cell":"B2","value":4200}]}. */
+    /** Create an XLSX workbook from dense row-major values. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","values":[["Month","Spend"],["January",4200]]}. */
     | "excel_create"
     /** Edit cells in an existing XLSX workbook. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"B2","value":4500},{"cell":"C2","value":"forecast"}]}. */
     | "excel_edit_cells"
@@ -570,11 +571,8 @@ declare module "flo:runtime" {
 
   /** Input accepted by the `csv_create` runtime tool. */
   type FloCsvCreateInput = {
-    assignments: {
-        cell: string;
-        value?: FloJsonValue;
-      }[];
     path: string;
+    values: FloJsonValue[][];
   };
 
   /** Output returned by the `csv_create` runtime tool. */
@@ -638,12 +636,9 @@ declare module "flo:runtime" {
 
   /** Input accepted by the `excel_create` runtime tool. */
   type FloExcelCreateInput = {
-    assignments: {
-        cell: string;
-        value?: FloJsonValue;
-      }[];
     path: string;
     sheet?: string;
+    values: FloJsonValue[][];
   };
 
   /** Output returned by the `excel_create` runtime tool. */
@@ -1036,7 +1031,7 @@ declare module "flo:runtime" {
     "csv_inspect": FloCsvInspectInput;
     /** Read a CSV A1 range. Example input: {"path":"task://data/sales.csv","range":"A1:C5"}. */
     "csv_read": FloCsvReadInput;
-    /** Create a CSV file with initial cell assignments. Example input: {"path":"task://data/sales.csv","assignments":[{"cell":"A1","value":"Quarter"},{"cell":"B1","value":"Revenue"},{"cell":"A2","value":"Q1"},{"cell":"B2","value":12500}]}. */
+    /** Create a CSV file from dense row-major values. Example input: {"path":"task://data/sales.csv","values":[["Quarter","Revenue"],["Q1",12500]]}. */
     "csv_create": FloCsvCreateInput;
     /** Edit cells in an existing CSV file. Example input: {"path":"task://data/sales.csv","assignments":[{"cell":"B2","value":12800},{"cell":"C2","value":"updated"}]}. */
     "csv_edit_cells": FloCsvEditCellsInput;
@@ -1044,7 +1039,7 @@ declare module "flo:runtime" {
     "excel_inspect": FloExcelInspectInput;
     /** Read an XLSX A1 range. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","range":"A1:D8"}. */
     "excel_read": FloExcelReadInput;
-    /** Create an XLSX workbook with initial cell assignments. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"A1","value":"Month"},{"cell":"B1","value":"Spend"},{"cell":"A2","value":"January"},{"cell":"B2","value":4200}]}. */
+    /** Create an XLSX workbook from dense row-major values. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","values":[["Month","Spend"],["January",4200]]}. */
     "excel_create": FloExcelCreateInput;
     /** Edit cells in an existing XLSX workbook. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","assignments":[{"cell":"B2","value":4500},{"cell":"C2","value":"forecast"}]}. */
     "excel_edit_cells": FloExcelEditCellsInput;
