@@ -434,7 +434,7 @@ declare module "flo:runtime" {
     | "excel_auto_fit_row"
     /** Atomically apply workbook structure edits, cell assignments, row copies, column copies, style copies, and row auto-fit in one XLSX save. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","operations":[{"kind":"insert_rows","index":3,"count":1}],"assignments":[{"cell":"A3","value":"February"},{"cell":"B3","value":3900}],"row_copies":[{"source_row":{"row":2},"target_rows":[{"row":3}]}],"style_copies":[{"source_cell":"B2","target_cells":["B3"]}],"auto_fit_rows":[3]}. */
     | "excel_apply_changes"
-    /** Fetch remote media into the virtual workspace. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","output_path":"session://imports/input.png"}. */
+    /** Fetch remote media into the virtual workspace. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","output_path":"task://attachments/11111111-1111-1111-1111-111111111111/input.png"}. */
     | "media_fetch"
     /** Upload a VFS file to media storage. Example input: {"input_path":"task://artifacts/result.png","filename":"report.png","ttl_seconds":3600}. */
     | "media_push_vfs"
@@ -1057,7 +1057,7 @@ declare module "flo:runtime" {
     "excel_auto_fit_row": FloExcelAutoFitRowInput;
     /** Atomically apply workbook structure edits, cell assignments, row copies, column copies, style copies, and row auto-fit in one XLSX save. Example input: {"path":"task://spreadsheets/budget.xlsx","sheet":"Summary","operations":[{"kind":"insert_rows","index":3,"count":1}],"assignments":[{"cell":"A3","value":"February"},{"cell":"B3","value":3900}],"row_copies":[{"source_row":{"row":2},"target_rows":[{"row":3}]}],"style_copies":[{"source_cell":"B2","target_cells":["B3"]}],"auto_fit_rows":[3]}. */
     "excel_apply_changes": FloExcelApplyChangesInput;
-    /** Fetch remote media into the virtual workspace. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","output_path":"session://imports/input.png"}. */
+    /** Fetch remote media into the virtual workspace. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","output_path":"task://attachments/11111111-1111-1111-1111-111111111111/input.png"}. */
     "media_fetch": FloMediaFetchInput;
     /** Upload a VFS file to media storage. Example input: {"input_path":"task://artifacts/result.png","filename":"report.png","ttl_seconds":3600}. */
     "media_push_vfs": FloMediaPushVfsInput;
