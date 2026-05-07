@@ -22,6 +22,8 @@ Optional fields include:
 - `retry_policy`
 - `vault`
 - `state`
+- `direct_call`
+- `script_tools`
 
 Example:
 
@@ -41,6 +43,17 @@ execution:
   entrypoint: run
 timeout_ms: 30000
 ```
+
+Tool field behavior:
+
+- `direct_call`
+  - defaults to `false`
+  - when `true`, the tool may be invoked explicitly through `/call <tool_id>`
+- `script_tools`
+  - defaults to `[]`
+  - declares helper tool ids callable from this tool through `flo.callTool(...)`
+  - these helpers are not automatically exposed to the LLM
+  - these helpers are not listed by `/call` unless the helper tool also sets `direct_call: true`
 
 ## Script Execution
 

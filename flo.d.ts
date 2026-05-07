@@ -444,6 +444,8 @@ declare module "flo:runtime" {
     | "send_notification"
     /** Send previously uploaded media back to the current channel as a file attachment when it is smaller than 262144 bytes. Larger media returns a presigned download URL instead. Call media_push_vfs or media_push_base64 first, then pass the returned media_id here. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","filename":"report.csv"}. */
     | "send_media_attachment"
+    /** Activate a visible skill for the current task by `skill_id`. Activation is additive: it keeps existing selected skills and adds the new one. Use `list_available_skills` first when you need to inspect candidate skill ids. If the skill is already selected, this tool succeeds as a no-op. */
+    | "activate_skill"
     /** Read a text resource from a selected skill or import any skill resource into VFS by `skill_id` and `resource_id`. Use `resource_id` exactly as provided in the prompt (for example, `"resource.1"`). Do not strip prefixes, rewrite the value, or replace it with the filename. Valid example: `"resource_id":"resource.1"`. Invalid examples: `"resource_id":"1"` and `"resource_id":"guide.md"`. For text resources, prefer `mode=text` to read content directly. Use `mode=import_to_vfs` only when you need the resource saved as a VFS file for other tools or file-based processing, and provide `destination_path`. `destination_path` must be a VFS path such as `task://...` or `session://...`. Key takeaway: the `resource_id` is system-assigned and may differ from the actual file path. */
     | "read_skill_resource"
     /** Import a file from a selected skill into VFS by `skill_id` and author-relative `asset_path`. `skill_id` must match one of the selected skills. `asset_path` must stay relative to that skill's directory; absolute paths and `..` traversal are rejected. `destination_path` must be a VFS path such as `task://...` or `session://...`. */
@@ -975,6 +977,17 @@ declare module "flo:runtime" {
     size_bytes: number;
   };
 
+  /** Input accepted by the `activate_skill` runtime tool. */
+  type FloActivateSkillInput = {
+    skill_id: string;
+  };
+
+  /** Output returned by the `activate_skill` runtime tool. */
+  type FloActivateSkillOutput = {
+    selected_skill_ids: string[];
+    skill_id: string;
+  };
+
   /** Input accepted by the `read_skill_resource` runtime tool. */
   type FloReadSkillResourceInput = {
     destination_path?: string;
@@ -1067,6 +1080,8 @@ declare module "flo:runtime" {
     "send_notification": FloSendNotificationInput;
     /** Send previously uploaded media back to the current channel as a file attachment when it is smaller than 262144 bytes. Larger media returns a presigned download URL instead. Call media_push_vfs or media_push_base64 first, then pass the returned media_id here. Example input: {"media_id":"11111111-1111-1111-1111-111111111111","filename":"report.csv"}. */
     "send_media_attachment": FloSendMediaAttachmentInput;
+    /** Activate a visible skill for the current task by `skill_id`. Activation is additive: it keeps existing selected skills and adds the new one. Use `list_available_skills` first when you need to inspect candidate skill ids. If the skill is already selected, this tool succeeds as a no-op. */
+    "activate_skill": FloActivateSkillInput;
     /** Read a text resource from a selected skill or import any skill resource into VFS by `skill_id` and `resource_id`. Use `resource_id` exactly as provided in the prompt (for example, `"resource.1"`). Do not strip prefixes, rewrite the value, or replace it with the filename. Valid example: `"resource_id":"resource.1"`. Invalid examples: `"resource_id":"1"` and `"resource_id":"guide.md"`. For text resources, prefer `mode=text` to read content directly. Use `mode=import_to_vfs` only when you need the resource saved as a VFS file for other tools or file-based processing, and provide `destination_path`. `destination_path` must be a VFS path such as `task://...` or `session://...`. Key takeaway: the `resource_id` is system-assigned and may differ from the actual file path. */
     "read_skill_resource": FloReadSkillResourceInput;
     /** Import a file from a selected skill into VFS by `skill_id` and author-relative `asset_path`. `skill_id` must match one of the selected skills. `asset_path` must stay relative to that skill's directory; absolute paths and `..` traversal are rejected. `destination_path` must be a VFS path such as `task://...` or `session://...`. */
@@ -1126,6 +1141,8 @@ declare module "flo:runtime" {
     "send_notification": FloSendNotificationOutput;
     /** Output returned by the `send_media_attachment` runtime tool. */
     "send_media_attachment": FloSendMediaAttachmentOutput;
+    /** Output returned by the `activate_skill` runtime tool. */
+    "activate_skill": FloActivateSkillOutput;
     /** Output returned by the `read_skill_resource` runtime tool. */
     "read_skill_resource": FloReadSkillResourceOutput;
     /** Output returned by the `import_skill_asset` runtime tool. */

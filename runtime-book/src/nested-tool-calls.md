@@ -9,6 +9,11 @@ Nested calls are still scoped by the selected skill set. A script can call:
 - tools listed in the skill manifest's `script_tools`
 - inline tools declared via `tool_definitions`
 
+When a tool is invoked through `/call`, nested calls are scoped differently. A direct-call tool can call:
+
+- globally available runtime tools
+- tools listed in that tool manifest's `script_tools`
+
 `script_tools` are the usual choice when you want a helper tool callable from script without adding it to the LLM-visible tool list. Inline tools from `tool_definitions` are also callable because they are compiled into the selected skill's runtime tool set automatically.
 
 ## Generic Form
@@ -69,6 +74,25 @@ instruction_file: instructions.md
 ```
 
 In that example, `send_media_attachment` is available to `flo.callTool(...)` inside the selected skill's scripts, but it is not exposed in the execution-stage LLM tool list.
+
+For `/call`, declare helper access on the tool itself:
+
+```yaml
+name: publish_report
+description: Publish a prepared report.
+direct_call: true
+script_tools:
+  - send_media_attachment
+input_schema:
+  type: object
+  additionalProperties: false
+execution:
+  type: script
+  script_file: scripts/publish_report.mts
+  entrypoint: run
+```
+
+That makes `publish_report` callable from `/call publish_report`, while `send_media_attachment` stays nested-only unless it separately declares `direct_call: true`.
 
 ## Error Handling Pattern
 

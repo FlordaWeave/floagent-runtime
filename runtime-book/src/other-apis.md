@@ -61,6 +61,7 @@ Use this value to chunk child-task work before calling `spawnChildren(...)`.
 - `media_push_base64`
 - `send_notification`
 - `send_media_attachment`
+- `activate_skill`
 - `read_skill_resource`
 - `import_skill_asset`
 
@@ -70,6 +71,9 @@ When a built-in already matches the file or media operation you need, prefer it 
 
 Two built-ins are especially useful from authored skills:
 
+- `activate_skill` proactively adds a visible skill to the current task by `skill_id`
+  - activation is handled by suspending the current execution so `agentd` can restart the task turn with the expanded skill set
+  - if the newly activated skills require labels the current agent does not satisfy, `agentd` may hand the task over before execution continues
 - `read_skill_resource` reads a selected skill resource or imports it into VFS
 - `import_skill_asset` copies a selected skill asset into VFS
 
