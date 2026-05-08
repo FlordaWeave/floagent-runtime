@@ -898,6 +898,68 @@ const putLocalStateEntry = (
   };
 };
 
+const applyLocalJsonMergePatch = (target: unknown, patch: unknown): unknown => {
+  if (!isRecord(patch)) {
+    return cloneJsonValue(patch);
+  }
+  const base = isRecord(target) ? cloneJsonValue(target) as Record<string, unknown> : {};
+  for (const [key, patchValue] of Object.entries(patch)) {
+    if (patchValue === null) {
+      delete base[key];
+      continue;
+    }
+    base[key] = applyLocalJsonMergePatch(base[key], patchValue);
+  }
+  return base;
+};
+
+const patchLocalStateEntry = (
+  scopeKind: keyof LocalStateScopes,
+  scopeId: string,
+  key: string,
+  patch: Record<string, unknown>,
+  ttlSeconds: number,
+  ifRevision: string | null | undefined,
+) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, key)) {
+    persistMockFile();
+  }
+  const existing = maybeStateBucket(scopeKind, scopeId)?.[key];
+  if (ifRevision === null && existing) {
+    return { ok: false, conflict_revision: existing.revision };
+  }
+  if (typeof ifRevision === "string" && (!existing || existing.revision !== ifRevision)) {
+    return { ok: false, conflict_revision: existing?.revision };
+  }
+  const nextValue = applyLocalJsonMergePatch(existing?.value, patch);
+  return putLocalStateEntry(scopeKind, scopeId, key, nextValue, ttlSeconds, undefined);
+};
+
+const appendLocalStateEntry = (
+  scopeKind: keyof LocalStateScopes,
+  scopeId: string,
+  key: string,
+  item: unknown,
+  ttlSeconds: number,
+  ifRevision: string | null | undefined,
+) => {
+  if (purgeExpiredEntries(scopeKind, scopeId, key)) {
+    persistMockFile();
+  }
+  const existing = maybeStateBucket(scopeKind, scopeId)?.[key];
+  if (ifRevision === null && existing) {
+    return { ok: false, conflict_revision: existing.revision };
+  }
+  if (typeof ifRevision === "string" && (!existing || existing.revision !== ifRevision)) {
+    return { ok: false, conflict_revision: existing?.revision };
+  }
+  if (existing && !Array.isArray(existing.value)) {
+    throw new TypeError("flo.state.append requires the current value to be an array");
+  }
+  const nextValue = Array.isArray(existing?.value) ? [...existing.value, cloneJsonValue(item)] : [cloneJsonValue(item)];
+  return putLocalStateEntry(scopeKind, scopeId, key, nextValue, ttlSeconds, undefined);
+};
+
 const deleteLocalStateEntry = (
   scopeKind: keyof LocalStateScopes,
   scopeId: string,
@@ -961,6 +1023,36 @@ const statePut = async (request: unknown) => {
   const binding = resolveLocalStateBinding(request, key, "flo.state.put");
   const scopeId = resolveStateScopeId(request, binding, "flo.state.put");
   return putLocalStateEntry(binding.scope_kind, scopeId, key, request.value, ttlSeconds, ifRevision);
+};
+
+const statePatch = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.patch requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.state.patch requires non-empty `key`");
+  if (!isRecord(request.patch)) {
+    throw new TypeError("flo.state.patch requires object `patch`");
+  }
+  const ttlSeconds = parseOptionalTtlSeconds(request.ttl_seconds, "flo.state.patch") ?? defaultStateTtlSeconds;
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.state.patch");
+  const binding = resolveLocalStateBinding(request, key, "flo.state.patch");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.patch");
+  return patchLocalStateEntry(binding.scope_kind, scopeId, key, request.patch, ttlSeconds, ifRevision);
+};
+
+const stateAppend = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.state.append requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.state.append requires non-empty `key`");
+  if (!Object.prototype.hasOwnProperty.call(request, "item")) {
+    throw new TypeError("flo.state.append requires `item`");
+  }
+  const ttlSeconds = parseOptionalTtlSeconds(request.ttl_seconds, "flo.state.append") ?? defaultStateTtlSeconds;
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.state.append");
+  const binding = resolveLocalStateBinding(request, key, "flo.state.append");
+  const scopeId = resolveStateScopeId(request, binding, "flo.state.append");
+  return appendLocalStateEntry(binding.scope_kind, scopeId, key, request.item, ttlSeconds, ifRevision);
 };
 
 const stateDelete = async (request: unknown) => {
@@ -1065,6 +1157,8 @@ globalThis.__flo_runtime = {
     get: stateGet,
     list: stateList,
     put: statePut,
+    patch: statePatch,
+    append: stateAppend,
     delete: stateDelete,
   },
   task: {

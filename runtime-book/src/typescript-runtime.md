@@ -78,6 +78,7 @@ The Node preload shim supports:
 - `flo.sleep(...)`
 - `flo.time.formatUnixTimestamp(...)`
 - `flo.vault.get(...)` with `FLO_MOCKS_FILE`
+- `flo.state.*` with local state binding fixtures
 - `flo.task.getContext(...)`
 - `flo.task.emitEvent(...)`
 - browser helpers when `FLO_LOCAL_BROWSER=1`

@@ -31,7 +31,7 @@ Manifest state bindings support these scope kinds:
 
 For `shared`, bindings must declare `scope_id`. Scripts do not pass `scope_id` at runtime.
 
-## Read, List, Write, Delete
+## Read, List, Write, Patch, Append, Delete
 
 Read one key:
 
@@ -63,6 +63,39 @@ const write = await flo.state.put({
   if_revision: entry?.revision ?? null,
 });
 ```
+
+Atomically merge-patch an object value:
+
+```ts
+const patched = await flo.state.patch({
+  scope_kind: "session",
+  key: "counter.session.total",
+  patch: {
+    totals: { success: 4 },
+    stale_field: null,
+  },
+  if_revision: write.entry?.revision,
+});
+```
+
+`patch` uses JSON merge-patch semantics:
+
+- nested objects merge recursively
+- `null` removes a field
+- the full update commits under one new revision
+
+Atomically append one item to an array value:
+
+```ts
+const appended = await flo.state.append({
+  scope_kind: "task",
+  key: "counter.audit.events",
+  item: { type: "tick", at: 1700000000 },
+  if_revision: patched.entry?.revision,
+});
+```
+
+If the key is missing, `append` creates a one-item array. If the current value is not an array, the call fails.
 
 Delete:
 

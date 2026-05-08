@@ -201,6 +201,18 @@ await flo.state.put({
   value: { answer: 42 },
 });
 
+await flo.state.patch({
+  scope_kind: "profile",
+  key: "cache.answer",
+  patch: { refreshed_at: "2026-05-07T00:00:00Z" },
+});
+
+await flo.state.append({
+  scope_kind: "profile",
+  key: "queue.jobs",
+  item: { id: 1 },
+});
+
 await flo.state.get({
   scope_kind: "shared",
   key: "cache.shared.answer",

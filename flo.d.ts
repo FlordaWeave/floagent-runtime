@@ -116,6 +116,20 @@ declare module "flo:runtime" {
     if_revision?: string | null;
   };
 
+  type FloStatePatchRequest = FloStateBindingRequestBase & {
+    key: string;
+    patch: { [key: string]: FloJsonValue };
+    ttl_seconds?: number;
+    if_revision?: string | null;
+  };
+
+  type FloStateAppendRequest<TItem = FloJsonValue> = FloStateBindingRequestBase & {
+    key: string;
+    item: TItem;
+    ttl_seconds?: number;
+    if_revision?: string | null;
+  };
+
   type FloStateDeleteRequest = FloStateBindingRequestBase & {
     key: string;
     if_revision?: string | null;
@@ -1169,6 +1183,12 @@ declare module "flo:runtime" {
       list<T = FloJsonValue>(request: FloStateListRequest): Promise<FloStateListResult<T>>;
       /** Write one JSON-serializable value to a state binding. */
       put<T = FloJsonValue>(request: FloStatePutRequest<T>): Promise<FloStateWriteResult<T>>;
+      /** Atomically merge-patch one object value in a state binding. */
+      patch<T = FloJsonValue>(request: FloStatePatchRequest): Promise<FloStateWriteResult<T>>;
+      /** Atomically append one item to an array value in a state binding. */
+      append<TItem = FloJsonValue>(
+        request: FloStateAppendRequest<TItem>,
+      ): Promise<FloStateWriteResult<TItem[]>>;
       /** Delete one value from a state binding. */
       delete(request: FloStateDeleteRequest): Promise<{ ok: boolean; conflict_revision?: string }>;
     };
