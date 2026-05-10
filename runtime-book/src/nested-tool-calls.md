@@ -2,6 +2,8 @@
 
 Use `flo.callTool(...)` to call another runtime tool from your script.
 
+The supported `agentd` slash commands are `/call` and `/web`.
+
 Nested calls are still scoped by the selected skill set. A script can call:
 
 - globally available runtime tools

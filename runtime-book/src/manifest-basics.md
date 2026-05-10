@@ -46,6 +46,8 @@ timeout_ms: 30000
 
 Tool field behavior:
 
+- supported `agentd` slash commands are `/call` and `/web`
+
 - `direct_call`
   - defaults to `false`
   - when `true`, the tool may be invoked explicitly through `/call <tool_id>`
