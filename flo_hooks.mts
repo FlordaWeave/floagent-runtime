@@ -41,18 +41,6 @@ const isModuleLikeFormat = (format: string | null | undefined): boolean =>
   format === "module" || format === "module-typescript";
 const nativeFetch = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
 
-if (nativeFetch) {
-  globalThis.fetch = (input: string | URL | Request, init?: RequestInit) => {
-    const normalizedInput =
-      input instanceof URL
-        ? input.toString()
-        : typeof Request !== "undefined" && input instanceof Request
-          ? input
-          : String(input);
-    return nativeFetch(normalizedInput, init);
-  };
-}
-
 const unsupported = (name: string): never => {
   throw new Error(
     `${name} is unavailable in the local Node flo hook. Run this script inside agentd or avoid calling this API in local tests.`,
@@ -84,6 +72,389 @@ let localBrowserStartupPromise: Promise<string> | undefined;
 let localBrowserShutdownInstalled = false;
 const defaultStateTtlSeconds = 3600;
 const fallbackLocalToolId = "local-node-tool";
+const defaultLocalVfsRoot = path.join(repoRoot, ".tmp-flo-local-vfs");
+
+const isVfsPath = (value: string): boolean => value.startsWith("task://") || value.startsWith("session://");
+
+const utf8Encode = (value: string): number[] => {
+  const text = String(value);
+  const bytes: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    let codePoint = text.codePointAt(index)!;
+    if (codePoint > 0xffff) {
+      index += 1;
+    }
+    if (codePoint <= 0x7f) {
+      bytes.push(codePoint);
+    } else if (codePoint <= 0x7ff) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint <= 0xffff) {
+      bytes.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    }
+  }
+  return bytes;
+};
+
+const utf8Decode = (bytes: number[]): string => {
+  if (typeof TextDecoder === "function") {
+    return new TextDecoder("utf-8", { fatal: false }).decode(Uint8Array.from(bytes));
+  }
+
+  let output = "";
+  let index = 0;
+  while (index < bytes.length) {
+    const first = Number(bytes[index]);
+    if ((first & 0x80) === 0) {
+      output += String.fromCodePoint(first);
+      index += 1;
+      continue;
+    }
+
+    let needed = 0;
+    let codePoint = 0;
+    let minimum = 0;
+    if ((first & 0xe0) === 0xc0) {
+      needed = 1;
+      codePoint = first & 0x1f;
+      minimum = 0x80;
+    } else if ((first & 0xf0) === 0xe0) {
+      needed = 2;
+      codePoint = first & 0x0f;
+      minimum = 0x800;
+    } else if ((first & 0xf8) === 0xf0) {
+      needed = 3;
+      codePoint = first & 0x07;
+      minimum = 0x10000;
+    } else {
+      output += "\uFFFD";
+      index += 1;
+      continue;
+    }
+
+    if (index + needed >= bytes.length) {
+      output += "\uFFFD";
+      break;
+    }
+
+    let valid = true;
+    for (let offset = 1; offset <= needed; offset += 1) {
+      const next = Number(bytes[index + offset]);
+      if ((next & 0xc0) !== 0x80) {
+        valid = false;
+        break;
+      }
+      codePoint = (codePoint << 6) | (next & 0x3f);
+    }
+    if (!valid || codePoint < minimum || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+      output += "\uFFFD";
+      index += 1;
+      continue;
+    }
+
+    output += String.fromCodePoint(codePoint);
+    index += needed + 1;
+  }
+  return output;
+};
+
+const normalizeBlobType = (value: unknown): string => (value == null ? "" : String(value).trim().toLowerCase());
+
+class BlobPolyfill {
+  _bytes: number[];
+  _type: string;
+  _floVfsPath: string | null;
+
+  constructor(parts: unknown[] = [], options: { type?: string } = {}) {
+    this._bytes = [];
+    this._type = normalizeBlobType(options.type);
+    this._floVfsPath = null;
+    for (const part of parts) {
+      this._bytes.push(...blobPartToBytes(part));
+    }
+  }
+
+  get size(): number {
+    return this._bytes.length;
+  }
+
+  get type(): string {
+    return this._type;
+  }
+
+  async text(): Promise<string> {
+    if (this._floVfsPath) {
+      throw new TypeError("VFS-backed File content is only available during fetch upload");
+    }
+    return utf8Decode(this._bytes);
+  }
+
+  async arrayBuffer(): Promise<ArrayBuffer> {
+    if (this._floVfsPath) {
+      throw new TypeError("VFS-backed File content is only available during fetch upload");
+    }
+    const bytes = Uint8Array.from(this._bytes);
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+
+  slice(start = 0, end = this.size, contentType = ""): BlobPolyfill {
+    const relativeStart = start < 0 ? Math.max(this.size + start, 0) : Math.min(start, this.size);
+    const relativeEnd = end < 0 ? Math.max(this.size + end, 0) : Math.min(end, this.size);
+    const span = Math.max(relativeEnd - relativeStart, 0);
+    return new BlobPolyfill([this._bytes.slice(relativeStart, relativeStart + span)], {
+      type: contentType,
+    });
+  }
+}
+
+class FilePolyfill extends BlobPolyfill {
+  _name: string;
+  _lastModified: number;
+
+  constructor(parts: unknown[], name: string, options: { type?: string; lastModified?: number } = {}) {
+    super(parts, options);
+    this._name = String(name);
+    this._lastModified = Number.isFinite(options.lastModified) ? Math.trunc(options.lastModified!) : Date.now();
+  }
+
+  get name(): string {
+    return this._name;
+  }
+
+  get lastModified(): number {
+    return this._lastModified;
+  }
+}
+
+class FormDataPolyfill {
+  _entries: Array<{ name: string; value: string | BlobPolyfill; filename?: string }>;
+
+  constructor() {
+    this._entries = [];
+  }
+
+  append(name: string, value: string | BlobPolyfill, filename?: string): void {
+    this._entries.push(normalizeFormDataEntry(name, value, filename));
+  }
+
+  set(name: string, value: string | BlobPolyfill, filename?: string): void {
+    const normalizedName = String(name);
+    this.delete(normalizedName);
+    this._entries.push(normalizeFormDataEntry(normalizedName, value, filename));
+  }
+
+  get(name: string): string | BlobPolyfill | null {
+    const entry = this._entries.find((item) => item.name === String(name));
+    return entry ? entry.value : null;
+  }
+
+  getAll(name: string): Array<string | BlobPolyfill> {
+    return this._entries.filter((item) => item.name === String(name)).map((item) => item.value);
+  }
+
+  has(name: string): boolean {
+    return this._entries.some((item) => item.name === String(name));
+  }
+
+  delete(name: string): void {
+    this._entries = this._entries.filter((item) => item.name !== String(name));
+  }
+
+  entries(): IterableIterator<[string, string | BlobPolyfill]> {
+    return this._entries.map((entry) => [entry.name, entry.value] as [string, string | BlobPolyfill])[Symbol.iterator]();
+  }
+
+  keys(): IterableIterator<string> {
+    return this._entries.map((entry) => entry.name)[Symbol.iterator]();
+  }
+
+  values(): IterableIterator<string | BlobPolyfill> {
+    return this._entries.map((entry) => entry.value)[Symbol.iterator]();
+  }
+
+  forEach(
+    callback: (value: string | BlobPolyfill, key: string, parent: FormDataPolyfill) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const entry of this._entries) {
+      callback.call(thisArg, entry.value, entry.name, this);
+    }
+  }
+
+  [Symbol.iterator](): IterableIterator<[string, string | BlobPolyfill]> {
+    return this.entries();
+  }
+}
+
+const cloneBlobAsFile = (value: BlobPolyfill, filename: string): FilePolyfill => {
+  const nextValue = new FilePolyfill(value._floVfsPath ? [] : [value], String(filename), {
+    type: value.type,
+    lastModified: value instanceof FilePolyfill ? value.lastModified : Date.now(),
+  });
+  if (value._floVfsPath) {
+    nextValue._floVfsPath = value._floVfsPath;
+  }
+  return nextValue;
+};
+
+const blobPartToBytes = (value: unknown): number[] => {
+  if (value instanceof BlobPolyfill) {
+    if (value._floVfsPath) {
+      throw new TypeError("VFS-backed File bodies are only supported inside FormData uploads");
+    }
+    return value._bytes.slice();
+  }
+  if (value instanceof ArrayBuffer) {
+    return Array.from(new Uint8Array(value));
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  }
+  return utf8Encode(String(value));
+};
+
+const normalizeFormDataEntry = (
+  name: string,
+  value: string | BlobPolyfill,
+  filename?: string,
+): { name: string; value: string | BlobPolyfill; filename?: string } => {
+  if (value instanceof BlobPolyfill) {
+    const normalizedValue = filename == null ? value : cloneBlobAsFile(value, filename);
+    return {
+      name: String(name),
+      value: normalizedValue,
+      filename: undefined,
+    };
+  }
+  return {
+    name: String(name),
+    value: String(value),
+  };
+};
+
+const basenameFromPath = (value: string): string => {
+  const normalized = String(value).replace(/\/+$/, "");
+  const slash = normalized.lastIndexOf("/");
+  return slash === -1 ? normalized : normalized.slice(slash + 1);
+};
+
+const sanitizeMultipartDispositionValue = (value: string, field: string): string => {
+  const normalized = String(value);
+  if (/[\x00-\x1f\x7f]/.test(normalized)) {
+    throw new TypeError(`${field} must not contain control characters`);
+  }
+  return normalized.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+};
+
+const resolveLocalVfsFilesystemPath = (rawPath: string): string => {
+  const value = String(rawPath).trim();
+  if (!isVfsPath(value)) {
+    throw new TypeError("flo.file requires a VFS path starting with task:// or session://");
+  }
+  const root = process.env.FLO_VFS_ROOT?.trim() || defaultLocalVfsRoot;
+  const normalized = value
+    .replace(/^task:\/\//, "")
+    .replace(/^session:\/\//, "")
+    .replace(/\\/g, "/");
+  const workspaceRelative = path.posix.normalize(`/${normalized}`).slice(1);
+  const segments = workspaceRelative.split("/").filter(Boolean);
+  if (workspaceRelative === ".." || workspaceRelative.startsWith("../") || segments.some((segment) => segment === "..")) {
+    throw new TypeError("flo.file does not allow path traversal");
+  }
+  if (value.startsWith("task://")) {
+    return path.join(root, "sessions", defaultLocalBrowserSessionId, "tasks", defaultLocalBrowserTaskId, ...segments);
+  }
+  return path.join(root, "sessions", defaultLocalBrowserSessionId, ...segments);
+};
+
+const createVfsFile = (
+  rawPath: string,
+  options: { type?: string; name?: string; lastModified?: number } = {},
+): FilePolyfill => {
+  const normalizedPath = String(rawPath).trim();
+  if (!isVfsPath(normalizedPath)) {
+    throw new TypeError("flo.file requires a VFS path starting with task:// or session://");
+  }
+  const name =
+    options.name == null || String(options.name).trim() === "" ? basenameFromPath(normalizedPath) : String(options.name);
+  const file = new FilePolyfill([], name, options);
+  file._floVfsPath = normalizedPath;
+  return file;
+};
+
+const loadBlobBytes = (value: BlobPolyfill): Uint8Array => {
+  if (value._floVfsPath) {
+    return new Uint8Array(fs.readFileSync(resolveLocalVfsFilesystemPath(value._floVfsPath)));
+  }
+  return Uint8Array.from(value._bytes);
+};
+
+const serializeMultipartBody = (
+  value: FormDataPolyfill,
+): { body: Uint8Array; contentType: string } => {
+  const boundary = `----flo-local-${crypto.randomBytes(12).toString("hex")}`;
+  const bytes: number[] = [];
+  const pushText = (text: string) => bytes.push(...utf8Encode(text));
+  const pushBinary = (buffer: Uint8Array) => bytes.push(...Array.from(buffer));
+
+  for (const entry of value._entries) {
+    pushText(`--${boundary}\r\n`);
+    if (typeof entry.value === "string") {
+      const safeName = sanitizeMultipartDispositionValue(entry.name, "FormData field name");
+      pushText(`Content-Disposition: form-data; name="${safeName}"\r\n\r\n`);
+      pushText(entry.value);
+      pushText("\r\n");
+      continue;
+    }
+    const effectiveFilename = entry.filename ?? (entry.value instanceof FilePolyfill ? entry.value.name : "blob");
+    const safeName = sanitizeMultipartDispositionValue(entry.name, "FormData field name");
+    const safeFilename = sanitizeMultipartDispositionValue(effectiveFilename, "FormData filename");
+    pushText(`Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n`);
+    if (entry.value.type) {
+      pushText(`Content-Type: ${entry.value.type}\r\n`);
+    }
+    pushText("\r\n");
+    pushBinary(loadBlobBytes(entry.value));
+    pushText("\r\n");
+  }
+  pushText(`--${boundary}--\r\n`);
+  return {
+    body: Uint8Array.from(bytes),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+};
+
+globalThis.Blob = BlobPolyfill as any;
+globalThis.File = FilePolyfill as any;
+globalThis.FormData = FormDataPolyfill as any;
+
+if (nativeFetch) {
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const normalizedInput =
+      input instanceof URL
+        ? input.toString()
+        : typeof Request !== "undefined" && input instanceof Request
+          ? input
+          : String(input);
+    const normalizedInit = init ? { ...init } : undefined;
+    if (normalizedInit?.body instanceof FormDataPolyfill) {
+      const multipart = serializeMultipartBody(normalizedInit.body);
+      normalizedInit.body = multipart.body as any;
+      const headers = new Headers(normalizedInit.headers);
+      headers.set("content-type", multipart.contentType);
+      normalizedInit.headers = headers;
+    } else if (normalizedInit?.body instanceof BlobPolyfill) {
+      throw new TypeError("fetch currently supports Blob/File values only inside FormData bodies");
+    }
+    return nativeFetch(normalizedInput, normalizedInit);
+  }) as typeof globalThis.fetch;
+}
 
 const localBrowserWorkerModulePath = (): string => {
   const override = process.env.FLO_LOCAL_BROWSER_WORKER_MODULE;
@@ -1176,6 +1547,7 @@ globalThis.__flo_runtime = {
     getBatchResults: async () => unsupported("flo.task.getBatchResults"),
   },
   callTool: async () => unsupported("flo.callTool"),
+  file: createVfsFile,
   browser: {
     run: browserRun,
     startRequestCapture: browserStartRequestCapture,
@@ -1197,6 +1569,7 @@ export const vault = runtime.vault;
 export const state = runtime.state;
 export const task = runtime.task;
 export const callTool = runtime.callTool;
+export const file = runtime.file;
 export const browser = runtime.browser;
 `;
 

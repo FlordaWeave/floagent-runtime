@@ -44,6 +44,42 @@ declare class URL {
   toJSON(): string;
 }
 
+declare class Blob {
+  constructor(blobParts?: Array<Blob | ArrayBuffer | ArrayBufferView | string>, options?: { type?: string });
+  readonly size: number;
+  readonly type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+  slice(start?: number, end?: number, contentType?: string): Blob;
+}
+
+declare class File extends Blob {
+  constructor(
+    fileBits: Array<Blob | ArrayBuffer | ArrayBufferView | string>,
+    fileName: string,
+    options?: { type?: string; lastModified?: number },
+  );
+  readonly name: string;
+  readonly lastModified: number;
+}
+
+declare class FormData implements Iterable<[string, string | Blob]> {
+  append(name: string, value: string | Blob, filename?: string): void;
+  delete(name: string): void;
+  get(name: string): string | Blob | null;
+  getAll(name: string): Array<string | Blob>;
+  has(name: string): boolean;
+  set(name: string, value: string | Blob, filename?: string): void;
+  entries(): IterableIterator<[string, string | Blob]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string | Blob>;
+  forEach(
+    callback: (value: string | Blob, key: string, parent: FormData) => void,
+    thisArg?: unknown,
+  ): void;
+  [Symbol.iterator](): IterableIterator<[string, string | Blob]>;
+}
+
 interface FloGlobalFetchInit {
   method?: string;
   headers?: Record<string, string>;
@@ -79,6 +115,12 @@ declare module "flo:runtime" {
     join_required_recovery?: FloJsonValue;
     script_child_batch_defer_recovery?: FloJsonValue;
     [key: string]: FloJsonValue | FloTaskResumePayload | undefined;
+  }
+
+  interface FloFileOptions {
+    name?: string;
+    type?: string;
+    lastModified?: number;
   }
 
   interface FloVaultProfileRequest {
@@ -1233,6 +1275,8 @@ declare module "flo:runtime" {
     callTool<TOutput = unknown, TInput = unknown>(
       request: FloCallToolRequest<TInput>,
     ): Promise<FloToolCallResult<TOutput>>;
+    /** Create a web-like File backed by a task:// or session:// VFS path for multipart uploads. */
+    file(path: string, options?: FloFileOptions): File;
     /** Drive a host-managed Playwright browser session. */
     browser: {
       /** Run a single browser command in the current task browser session. */
@@ -1277,6 +1321,8 @@ declare module "flo:runtime" {
   export const task: FloRuntimeApi["task"];
   /** Tool invocation helper exposed by the Flo runtime. */
   export const callTool: FloRuntimeApi["callTool"];
+  /** VFS-backed File helper exposed by the Flo runtime. */
+  export const file: FloRuntimeApi["file"];
   /** Browser automation helpers exposed by the Flo runtime. */
   export const browser: FloRuntimeApi["browser"];
 }

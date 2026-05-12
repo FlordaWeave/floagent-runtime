@@ -39,10 +39,34 @@ This affects:
 The runtime provides:
 
 - `fetch(...)`
+- `Blob`
+- `File`
+- `FormData`
 - `URL`
 - `URLSearchParams`
 
 That means many integration-oriented tools can work without additional libraries.
+
+For multipart uploads from the virtual workspace, create a VFS-backed `File` with `flo.file(...)`:
+
+```ts
+import * as flo from "flo:runtime";
+
+const form = new FormData();
+form.append("meta", JSON.stringify({ kind: "report" }));
+form.append(
+  "file",
+  flo.file("task://artifacts/report.csv", {
+    type: "text/csv",
+    name: "report.csv",
+  }),
+);
+
+await fetch("https://example.com/upload", {
+  method: "POST",
+  body: form,
+});
+```
 
 ## Task Context
 
