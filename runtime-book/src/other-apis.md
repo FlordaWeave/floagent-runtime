@@ -45,6 +45,21 @@ const maxChildren = flo.task.limits.maxSpawnChildren;
 
 Use this value to chunk child-task work before calling `spawnChildren(...)`.
 
+## `flo.task.getState(...)` And `flo.task.putState(...)`
+
+Read and write lightweight task-scoped state shared by all tools in the current task:
+
+```ts
+await flo.task.putState({
+  key: "checkpoint",
+  value: { phase: "fetching" },
+});
+
+const checkpoint = await flo.task.getState<{ phase?: string }>({
+  key: "checkpoint",
+});
+```
+
 ## Built-In Tools Through `flo.callTool(...)`
 
 `flo.d.ts` includes typed support for built-ins such as:
@@ -83,7 +98,7 @@ Both are invoked through `flo.callTool(...)`.
 
 - Favor JSON-serializable inputs and outputs.
 - Keep secrets in the vault, not in manifests or state.
-- Use task tool state for resume checkpoints.
+- Use shared task state or task tool state for resume checkpoints, depending on whether later tools need the same checkpoint.
 - Use the manifest as the contract for what your tool needs.
 
 For exact TypeScript signatures, refer to [`flo.d.ts`](https://github.com/FlordaWeave/floagent/blob/main/flo.d.ts).

@@ -16,6 +16,8 @@ It is useful for:
 - `flo.time.formatUnixTimestamp(...)`
 - `flo.vault.get(...)` with mock data
 - `flo.state.*` with local binding fixtures
+- `flo.task.getState(...)`
+- `flo.task.putState(...)`
 - `flo.task.getToolState(...)`
 - `flo.task.putToolState(...)`
 - `flo.task.getContext(...)`

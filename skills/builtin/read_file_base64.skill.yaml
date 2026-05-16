@@ -1,0 +1,18 @@
+skill_id: read_file_base64
+version: "1.0.0"
+name: read_file_base64
+description: Read a small binary file from the virtual workspace and return it as base64.
+instruction: |
+  Use this skill when you need the raw bytes of a file from the virtual workspace as base64 instead of UTF-8 text.
+
+  Example payload:
+  - `read_file_base64`: `{"path":"task://attachments/input.bin","max_bytes":65536}`
+
+  Important constraints:
+  - `path` must be a VFS path such as `task://...` or `session://...`.
+  - Use this tool for binary or opaque file content, not for normal text files.
+  - The builtin tool rejects files larger than 262144 bytes, and `max_bytes` cannot exceed that limit.
+  - If you only have a remote URL first, download it into VFS with `download_url_to_file` before reading it as base64.
+  - If you only have a `media_id` for an attachment, use `media_fetch` before reading the resulting VFS file as base64.
+tools:
+  - read_file_base64

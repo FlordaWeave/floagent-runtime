@@ -51,6 +51,7 @@ Tool field behavior:
 - `direct_call`
   - defaults to `false`
   - when `true`, the tool may be invoked explicitly through `/call <tool_id>`
+  - this affects `/call` discoverability only; it does not automatically expose helper tools
 - `script_tools`
   - defaults to `[]`
   - declares helper tool ids callable from this tool through `flo.callTool(...)`
@@ -127,6 +128,8 @@ Field behavior:
   - allowed values: `nano`, `small`, `medium`, `large`, `frontier`
   - applies only to the main execution stage, not task selection, gate, or task summary
   - when multiple selected skills request different tiers, Flo uses the highest requested tier
+  - the requested tier is resolved through the runtime's configured tier-to-model mapping
+  - when omitted, Flo uses the configured execution-stage model
 - `script_tools`
   - declares referenced external or built-in tool ids for the selected skill
   - these tools are callable from `flo.callTool(...)`
@@ -141,6 +144,24 @@ Authoring rules:
 - use `script_tools` when only your script should call the tool
 - do not repeat an inline tool from `tool_definitions` in either `tools` or `script_tools`
 - `script_tools` only changes LLM visibility; it does not create a separate security boundary from the selected skill's scripts
+
+## Visibility Summary
+
+Flo has separate visibility rules for normal execution and explicit `/call` usage.
+
+During normal execution:
+
+- the LLM sees globally available tools plus tools listed in the selected skills' `tools`
+- the selected skills' scripts can call globally available tools plus tools listed in the selected skills' `tools` and `script_tools`
+- inline tools from `tool_definitions` are available to the owning skill without being repeated elsewhere
+
+During `/call` execution:
+
+- `/call` lists tools whose manifests set `direct_call: true`
+- running `/call <tool_id>` preserves the current selected-skill context for nested tool access
+- the called tool may always call itself
+- the called tool may also call globally available tools and tools listed in that tool manifest's own `script_tools`
+- helper tools still remain hidden unless they are global, reachable through the selected skill set, or declared in the direct-call tool's own `script_tools`
 
 ## State and Vault Declarations
 

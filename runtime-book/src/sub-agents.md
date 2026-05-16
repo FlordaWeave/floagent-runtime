@@ -89,7 +89,7 @@ const results = await flo.task.getBatchResults({
 });
 ```
 
-Use [Task Tool State](task-tool-state.md) for these checkpoints unless you specifically need manifest-declared `flo.state`.
+Use [Task State](task-tool-state.md) for these checkpoints. Prefer tool-partitioned task state by default, and switch to shared task state only when later tools in the same task need the same checkpoint.
 
 ## Read Results Without Suspending
 
@@ -117,7 +117,7 @@ Each child result includes:
 ## Authoring Guidance
 
 - Use child tasks for durable parallelism, not for lightweight local branching.
-- Persist checkpoints with [Task Tool State](task-tool-state.md) before waiting.
+- Persist checkpoints with [Task State](task-tool-state.md) before waiting.
 - Keep child inputs compact and JSON-serializable.
 - Handle partial failures explicitly; one child can fail while others succeed.
 

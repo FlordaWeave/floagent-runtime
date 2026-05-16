@@ -14,6 +14,8 @@ Nested calls are still scoped by the selected skill set. A script can call:
 When a tool is invoked through `/call`, nested calls are scoped differently. A direct-call tool can call:
 
 - globally available runtime tools
+- tools reachable through the current selected skill set
+- the direct-call tool itself
 - tools listed in that tool manifest's `script_tools`
 
 `script_tools` are the usual choice when you want a helper tool callable from script without adding it to the LLM-visible tool list. Inline tools from `tool_definitions` are also callable because they are compiled into the selected skill's runtime tool set automatically.
@@ -95,6 +97,23 @@ execution:
 ```
 
 That makes `publish_report` callable from `/call publish_report`, while `send_media_attachment` stays nested-only unless it separately declares `direct_call: true`.
+
+## Direct-Call Visibility Rules
+
+`direct_call: true` answers one question only: whether a tool can be invoked explicitly through `/call`.
+
+It does not:
+
+- add the tool to the normal execution-stage LLM tool list
+- expose that tool's helpers to the LLM
+- make every other selected-skill-only helper automatically callable
+
+In practice:
+
+- `tools` controls what the execution-stage LLM can call for a selected skill
+- `script_tools` controls helper access from `flo.callTool(...)` without exposing those helpers to the LLM
+- `direct_call: true` controls whether `/call <tool_id>` is allowed
+- a helper used from a direct-call tool still needs to be global, available through the current selected skills, or declared in the direct-call tool's own `script_tools`
 
 ## Error Handling Pattern
 

@@ -1,0 +1,19 @@
+skill_id: download_url_to_file
+version: "1.0.0"
+name: download_url_to_file
+description: Stream an HTTP or HTTPS URL into a file in the virtual workspace.
+instruction: |
+  Use this skill when you need to download a remote file into the virtual workspace for later inspection or processing.
+
+  Example payload:
+  - `download_url_to_file`: `{"url":"https://example.com/report.pdf","output_path":"task://downloads/report.pdf","max_bytes":1048576}`
+
+  Important constraints:
+  - `url` must be an `http://` or `https://` URL.
+  - `output_path` must be a VFS path such as `task://...` or `session://...`.
+  - The builtin tool streams the response into VFS and rejects downloads larger than 16777216 bytes by default.
+  - Use `max_bytes` to set a tighter cap when you know the expected file size.
+  - Internal, loopback, link-local, and other private-network targets are rejected.
+  - After downloading, use another file skill to inspect or process the saved VFS file.
+tools:
+  - download_url_to_file

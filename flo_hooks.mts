@@ -1206,6 +1206,7 @@ const currentLocalToolId = (): string => {
   return fallbackLocalToolId;
 };
 
+const taskStateReservedKey = (key: string) => `__flo.task.state/${key}`;
 const toolStateReservedKey = (toolId: string, key: string) => `__flo.task.tool_state/${toolId}/${key}`;
 
 const getLocalStateEntry = (scopeKind: keyof LocalStateScopes, scopeId: string, key: string) => {
@@ -1437,6 +1438,39 @@ const stateDelete = async (request: unknown) => {
   return deleteLocalStateEntry(binding.scope_kind, scopeId, key, ifRevision);
 };
 
+const taskStateGet = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.task.getState requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.task.getState requires non-empty `key`");
+  const entry = getLocalStateEntry(
+    "task",
+    process.env.FLO_LOCAL_TASK_ID?.trim() || defaultLocalBrowserTaskId,
+    taskStateReservedKey(key),
+  );
+  return entry ? entry.value : null;
+};
+
+const taskStatePut = async (request: unknown) => {
+  if (!isRecord(request)) {
+    throw new TypeError("flo.task.putState requires an object request");
+  }
+  const key = requireNonEmptyString(request.key, "flo.task.putState requires non-empty `key`");
+  if (!Object.prototype.hasOwnProperty.call(request, "value")) {
+    throw new TypeError("flo.task.putState requires `value`");
+  }
+  const ttlSeconds = parseOptionalTtlSeconds(request.ttl_seconds, "flo.task.putState") ?? defaultStateTtlSeconds;
+  const ifRevision = parseOptionalIfRevision(request.if_revision, "flo.task.putState");
+  return putLocalStateEntry(
+    "task",
+    process.env.FLO_LOCAL_TASK_ID?.trim() || defaultLocalBrowserTaskId,
+    taskStateReservedKey(key),
+    request.value,
+    ttlSeconds,
+    ifRevision,
+  );
+};
+
 const taskToolStateGet = async (request: unknown) => {
   if (!isRecord(request)) {
     throw new TypeError("flo.task.getToolState requires an object request");
@@ -1536,6 +1570,8 @@ globalThis.__flo_runtime = {
     limits: {
       maxSpawnChildren: floTaskMaxSpawnChildren,
     },
+    getState: taskStateGet,
+    putState: taskStatePut,
     getToolState: taskToolStateGet,
     putToolState: taskToolStatePut,
     getContext: async () => taskContext(),

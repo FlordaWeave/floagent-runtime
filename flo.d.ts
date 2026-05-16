@@ -228,7 +228,18 @@ declare module "flo:runtime" {
     tool_id?: string;
   }
 
+  interface FloTaskGetStateRequest {
+    key: string;
+  }
+
   interface FloTaskPutToolStateRequest<T = FloJsonValue> {
+    key: string;
+    value: T;
+    ttl_seconds?: number;
+    if_revision?: string | null;
+  }
+
+  interface FloTaskPutStateRequest<T = FloJsonValue> {
     key: string;
     value: T;
     ttl_seconds?: number;
@@ -454,6 +465,10 @@ declare module "flo:runtime" {
     | "read_text_file"
     /** Write UTF-8 text content to a VFS file, creating parent directories as needed and overwriting any existing file. Only VFS URIs are allowed, and content larger than 65536 bytes is rejected. Example input: {"path":"task://notes/summary.txt","content":"hello world"}. */
     | "write_text_file"
+    /** Download an HTTP or HTTPS URL into a VFS file using streaming writes. Only VFS URIs are allowed for output_path, existing files are overwritten, and responses larger than 16777216 bytes are rejected by default. Example input: {"url":"https://example.com/report.pdf","output_path":"task://downloads/report.pdf","max_bytes":1048576}. */
+    | "download_url_to_file"
+    /** Read binary file content from a VFS file and return it as base64. Only VFS URIs are allowed, and files larger than 262144 bytes are rejected by default. Example input: {"path":"task://attachments/input.bin","max_bytes":65536}. */
+    | "read_file_base64"
     /** List the immediate files and directories under a VFS directory. Only VFS URIs are allowed. Example input: {"path":"task://artifacts"}. */
     | "read_dir"
     /** Create a ZIP archive from VFS files or directories. All input and output paths must be VFS URIs. Example input: {"input_paths":["task://report.txt","task://charts"],"output_path":"session://exports/report_bundle.zip"}. */
@@ -546,6 +561,35 @@ declare module "flo:runtime" {
   type FloWriteTextFileOutput = {
     bytes_written: number;
     path: string;
+  };
+
+  /** Input accepted by the `download_url_to_file` runtime tool. */
+  type FloDownloadUrlToFileInput = {
+    max_bytes?: number;
+    output_path: string;
+    url: string;
+  };
+
+  /** Output returned by the `download_url_to_file` runtime tool. */
+  type FloDownloadUrlToFileOutput = {
+    content_type?: string;
+    output_path: string;
+    size_bytes: number;
+    url: string;
+  };
+
+  /** Input accepted by the `read_file_base64` runtime tool. */
+  type FloReadFileBase64Input = {
+    max_bytes?: number;
+    path: string;
+  };
+
+  /** Output returned by the `read_file_base64` runtime tool. */
+  type FloReadFileBase64Output = {
+    base64_data: string;
+    max_bytes: number;
+    path: string;
+    size_bytes: number;
   };
 
   /** Input accepted by the `read_dir` runtime tool. */
@@ -1090,6 +1134,10 @@ declare module "flo:runtime" {
     "read_text_file": FloReadTextFileInput;
     /** Write UTF-8 text content to a VFS file, creating parent directories as needed and overwriting any existing file. Only VFS URIs are allowed, and content larger than 65536 bytes is rejected. Example input: {"path":"task://notes/summary.txt","content":"hello world"}. */
     "write_text_file": FloWriteTextFileInput;
+    /** Download an HTTP or HTTPS URL into a VFS file using streaming writes. Only VFS URIs are allowed for output_path, existing files are overwritten, and responses larger than 16777216 bytes are rejected by default. Example input: {"url":"https://example.com/report.pdf","output_path":"task://downloads/report.pdf","max_bytes":1048576}. */
+    "download_url_to_file": FloDownloadUrlToFileInput;
+    /** Read binary file content from a VFS file and return it as base64. Only VFS URIs are allowed, and files larger than 262144 bytes are rejected by default. Example input: {"path":"task://attachments/input.bin","max_bytes":65536}. */
+    "read_file_base64": FloReadFileBase64Input;
     /** List the immediate files and directories under a VFS directory. Only VFS URIs are allowed. Example input: {"path":"task://artifacts"}. */
     "read_dir": FloReadDirInput;
     /** Create a ZIP archive from VFS files or directories. All input and output paths must be VFS URIs. Example input: {"input_paths":["task://report.txt","task://charts"],"output_path":"session://exports/report_bundle.zip"}. */
@@ -1151,6 +1199,10 @@ declare module "flo:runtime" {
     "read_text_file": FloReadTextFileOutput;
     /** Output returned by the `write_text_file` runtime tool. */
     "write_text_file": FloWriteTextFileOutput;
+    /** Output returned by the `download_url_to_file` runtime tool. */
+    "download_url_to_file": FloDownloadUrlToFileOutput;
+    /** Output returned by the `read_file_base64` runtime tool. */
+    "read_file_base64": FloReadFileBase64Output;
     /** Output returned by the `read_dir` runtime tool. */
     "read_dir": FloReadDirOutput;
     /** Output returned by the `zip` runtime tool. */
@@ -1238,6 +1290,12 @@ declare module "flo:runtime" {
     task: {
       /** Runtime limits for task orchestration helpers. */
       limits: FloTaskLimits;
+      /** Read task-shared convenience state from the current task. */
+      getState<T = FloJsonValue>(request: FloTaskGetStateRequest): Promise<T | null>;
+      /** Write task-shared convenience state for the current task. */
+      putState<T = FloJsonValue>(
+        request: FloTaskPutStateRequest<T>,
+      ): Promise<FloStateWriteResult<T>>;
       /** Read tool-partitioned convenience state from the current task. */
       getToolState<T = FloJsonValue>(request: FloTaskGetToolStateRequest): Promise<T | null>;
       /** Write tool-partitioned convenience state for the current tool in the current task. */
@@ -1254,7 +1312,9 @@ declare module "flo:runtime" {
        * Suspend the parent task until the child batch is terminal, then return its results.
        *
        * The runtime re-enters the same script after resume; it does not preserve the JS stack.
-       * Persist any script progress needed after resume with `putToolState` before calling this.
+       * Persist any script progress needed after resume with `putToolState` for tool-owned
+       * checkpoints, or `putState` when later tools in the same task need to share that state,
+       * before calling this.
        */
       waitForBatch(
         request: FloWaitForBatchRequest,
